@@ -102,7 +102,14 @@ def _parse_dia(rows, start, end, dia):
         slice_ = _extract_day_slice(row, dia)
         markers, jaula = _markers_from_slice(slice_)
         franja = resultado.setdefault(horario_actual, {"posiciones": {}, "jaula": [None, None]})
-        franja["posiciones"].update(markers)
+        for pos, val in markers.items():
+            previo = franja["posiciones"].get(pos)
+            if previo is not None and previo != val:
+                raise ValueError(
+                    f"Posicion {pos} duplicada con valores distintos en {dia} {horario_actual}: "
+                    f"'{previo}' vs '{val}'. Revisa esa celda en la Sheet."
+                )
+            franja["posiciones"][pos] = val
         if jaula and fila_en_franja < 2:
             franja["jaula"][fila_en_franja] = jaula
         fila_en_franja += 1
