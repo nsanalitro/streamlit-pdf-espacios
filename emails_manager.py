@@ -33,6 +33,14 @@ SIN_TERCER_DIA = {"Escoleta", "Prebenjamín"}
 # a proposito hasta que Nico complete su contenido real.
 CATEGORIAS_AUTOMATICO = ["Escoleta", "Prebenjamín"]
 
+# Categorias con 3er entrenamiento semanal (reciben Dia3 el jueves). Fuera
+# de CATEGORIAS_AUTOMATICO porque el envio de Dia3 hoy se hace a mano desde
+# la app, categoria por categoria, hasta confirmar el flujo.
+CATEGORIAS_DIA3 = [
+    "Benjamín", "Alevín", "Infantil", "Cadete",
+    "Infantil Femenino", "Cadete Femenino", "Juvenil Femenino",
+]
+
 MAX_SEMANAS_POR_CICLO = 3
 MAX_CICLOS_POR_CM = 4
 MAX_CM = 3
@@ -258,4 +266,8 @@ def calcular_siguiente_envio(dia_semana, estado):
         if ultimo_dia != 1:
             return None  # ya se mando el Dia2 de esta semana, o el Dia1 no salio
         return (cm, ciclo, semana, 2)
-    return None  # Lunes/Miercoles/Jueves/Sabado/Domingo: nada para Escoleta/Prebenjamin
+    if dia_semana == "JUEVES":
+        if ultimo_dia != 2:
+            return None  # el Dia2 de esta semana todavia no salio, o el Dia3 ya salio
+        return (cm, ciclo, semana, 3)  # aplica solo a CATEGORIAS_DIA3, no a Escoleta/Prebenjamin
+    return None  # Lunes/Miercoles/Sabado/Domingo: nunca corresponde nada
