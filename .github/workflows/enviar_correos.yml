@@ -1,0 +1,37 @@
+name: Envio automatico de correos a entrenadores
+
+on:
+  schedule:
+    # 07:00 UTC ~ 08:00 hora de Madrid (no ajusta el cambio de horario de
+    # verano/invierno; puede correr con ~1h de desfase segun la epoca).
+    - cron: "0 7 * * 2,4,5"
+  workflow_dispatch: {}
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Ejecutar envio (modo prueba por defecto)
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+          SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+          # Cambiar a "0" solo cuando Nico confirme que los envios reales
+          # de Escoleta y Prebenjamin estan validados.
+          DRY_RUN: "1"
+        run: python enviar_automatico.py
+
+      - name: Guardar envios_log.txt
+        uses: actions/upload-artifact@v4
+        with:
+          name: envios_log
+          path: envios_log.txt
+          if-no-files-found: ignore

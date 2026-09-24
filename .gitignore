@@ -5,3 +5,4 @@ venv/
 credenciales.json
 output/
 .streamlit/secrets.toml
+envios_log.txt
