@@ -10,6 +10,52 @@ import sheets_manager as sm
 
 st.set_page_config(page_title="AFA Internacional", page_icon="🗺️", layout="centered")
 
+# Cuando la app esta procesando (el indicador nativo de Streamlit aparece
+# arriba a la derecha), se tapa la pantalla con un vidrio esmerilado y se
+# muestra un indicador propio centrado, para que quede claro que hay que
+# esperar y no tocar nada. El indicador nativo de Streamlit vive en un
+# contenedor con su propio sistema de coordenadas (no se puede recentrar
+# de forma confiable con CSS), por eso se oculta y se reemplaza por este.
+# Requiere navegador con soporte de :has() (todos los actuales).
+st.markdown(
+    """
+    <style>
+    [data-testid="stStatusWidget"] {
+        opacity: 0 !important;
+    }
+    [data-testid="stApp"]:has([data-testid="stStatusWidget"])::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.25);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        z-index: 999998;
+    }
+    [data-testid="stApp"]:has([data-testid="stStatusWidget"])::after {
+        content: "⏳\\A Procesando…\\A no cierres ni recargues la página";
+        white-space: pre;
+        text-align: center;
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        z-index: 999999;
+        color: white;
+        font-size: 0.95rem;
+        font-weight: 600;
+        line-height: 1.8;
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+        animation: afa-pulso 1.4s ease-in-out infinite;
+    }
+    @keyframes afa-pulso {
+        0%, 100% { transform: translate(-50%, -50%) scale(0.96); opacity: 0.7; }
+        50% { transform: translate(-50%, -50%) scale(1.05); opacity: 1; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("AFA Internacional · UCF Santa Perpètua")
 
 tab_espacios, tab_correos = st.tabs(["Mapas de Espacios", "Envío de Correos"])
