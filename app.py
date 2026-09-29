@@ -37,7 +37,7 @@ st.markdown(
         white-space: pre;
         text-align: center;
         position: fixed;
-        top: 50%;
+        top: calc(50% - 40px);
         left: 50%;
         z-index: 999999;
         color: white;
@@ -50,6 +50,23 @@ st.markdown(
     @keyframes afa-pulso {
         0%, 100% { transform: translate(-50%, -50%) scale(0.96); opacity: 0.7; }
         50% { transform: translate(-50%, -50%) scale(1.05); opacity: 1; }
+    }
+    /* Barra de progreso real (st.progress) centrada dentro del overlay,
+    encima del icono/texto. Solo existe en el DOM mientras hay un progreso
+    en curso, asi que no hace falta condicionarla con :has(). */
+    [data-testid="stProgress"] {
+        position: fixed !important;
+        top: calc(50% + 45px) !important;
+        left: 50% !important;
+        transform: translateX(-50%) !important;
+        width: min(320px, 80vw) !important;
+        z-index: 999999 !important;
+    }
+    [data-testid="stProgress"] [data-testid="stCaptionContainer"],
+    [data-testid="stProgress"] div[class*="caption"] {
+        color: white !important;
+        text-align: center !important;
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
     }
     </style>
     """,
@@ -162,10 +179,12 @@ with tab_correos:
     clave_actual = (cm, ciclo, semana, dia_correo)
 
     if sincronizar:
+        categorias = em.categorias_del_dia(dia_correo)
+        total = len(categorias)
+        progress = st.progress(0, text=f"Armando vista previa... 0/{total}")
         try:
-            categorias = em.categorias_del_dia(dia_correo)
             previews = []
-            for categoria in categorias:
+            for i, categoria in enumerate(categorias):
                 emails, asunto, cuerpo, videos_faltantes = em.generar_preview(categoria, cm, ciclo, semana, dia_correo)
                 previews.append({
                     "categoria": categoria,
@@ -174,10 +193,14 @@ with tab_correos:
                     "cuerpo": cuerpo,
                     "videos_faltantes": videos_faltantes,
                 })
+                pct = int((i + 1) / total * 100)
+                progress.progress(pct, text=f"Armando vista previa... {i + 1}/{total} ({pct}%)")
             st.session_state.preview_correos = {"clave": clave_actual, "items": previews}
         except Exception as e:
             st.session_state.preview_correos = None
             st.error(f"No se pudo generar la vista previa: {e}")
+        finally:
+            progress.empty()
 
     estado = st.session_state.get("preview_correos")
     if estado and estado["clave"] == clave_actual:
@@ -214,13 +237,18 @@ with tab_correos:
                 disabled=not enviables,
             )
         if confirmar:
+            total_enviables = len(enviables)
+            progress_envio = st.progress(0, text=f"Enviando... 0/{total_enviables}")
             resultados = []
-            for item in enviables:
+            for i, item in enumerate(enviables):
                 try:
                     em.enviar_correo(item["emails"], item["asunto"], item["cuerpo"])
                     resultados.append((item["categoria"], True, None))
                 except Exception as e:
                     resultados.append((item["categoria"], False, str(e)))
+                pct = int((i + 1) / total_enviables * 100)
+                progress_envio.progress(pct, text=f"Enviando... {i + 1}/{total_enviables} ({pct}%)")
+            progress_envio.empty()
             for categoria, ok, error in resultados:
                 if ok:
                     st.success(f"{categoria}: enviado.")
