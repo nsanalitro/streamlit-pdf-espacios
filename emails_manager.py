@@ -8,6 +8,7 @@ from email.mime.text import MIMEText
 
 import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -48,22 +49,28 @@ MAX_CM = 3
 ESTADO_TAB = "Estado_Envios"
 
 
-def _get_client(credentials_path="credenciales.json"):
+def _get_credentials(credentials_path="credenciales.json"):
     # Orden: Streamlit Cloud (secrets) -> GitHub Actions (variable de
     # entorno con el JSON completo) -> archivo local (dev).
     try:
         import streamlit as st
         info = dict(st.secrets["gcp_service_account"])
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+        return Credentials.from_service_account_info(info, scopes=SCOPES)
     except Exception:
         import json
         import os
         env_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
         if env_json:
-            creds = Credentials.from_service_account_info(json.loads(env_json), scopes=SCOPES)
-        else:
-            creds = Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
-    return gspread.authorize(creds)
+            return Credentials.from_service_account_info(json.loads(env_json), scopes=SCOPES)
+        return Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
+
+
+def _get_client(credentials_path="credenciales.json"):
+    return gspread.authorize(_get_credentials(credentials_path))
+
+
+def _get_drive_service(credentials_path="credenciales.json"):
+    return build("drive", "v3", credentials=_get_credentials(credentials_path))
 
 
 def _categoria_base(categoria_raw):
@@ -93,16 +100,14 @@ def get_destinatarios(credentials_path="credenciales.json"):
 
 
 # Esqueletos horarios por tipo de sesion. F7 (Escoleta/Prebenjamin/Benjamin/
-# Alevin) confirmado por Nico: estructura real de 90' que se viene enviando
-# (Explicacion inicial + T1-15'/T2-25'/T3-30', segun el Word maestro vigente),
-# no la de 60' de la skill vieja.
+# Alevin) verificado contra correos reales enviados (Gmail, Ciclo2-Semana1/2):
+# Tarea0-15'/T1-10'/T2-20'/T3-30' con transiciones de 5', total 90'.
 ESQUELETOS = {
     "f7_90": [
-        ("Tarea 0 (motricidad)", "15' (Explicación 2', Desarrollo 10', Feedback 3')"),
-        ("Explicación inicial", "5'"),
-        ("T1", "15'"),
+        ("Tarea 0 (motricidad)", "15'"),
+        ("T1", "10'"),
         ("Transición", "5'"),
-        ("T2", "25'"),
+        ("T2", "20'"),
         ("Transición", "5'"),
         ("T3", "30'"),
         ("Cierre", "5'"),
@@ -139,6 +144,45 @@ CATEGORIA_ESQUELETO = {
     "Juvenil Femenino": "f11_70",
 }
 
+# Prefijo de nombre de archivo de video en Drive por categoria de contenido
+# (verificado contra archivos reales, ej. "ACM1-C2-S2-D1-T2", "CA-CM1-C2-S1-D3-T1").
+# Las categorias espejo (Infantil Femenino, etc.) resuelven su prefijo via
+# CATEGORIA_ESPEJO antes de llegar aca.
+CATEGORIA_PREFIJO_VIDEO = {
+    "Escoleta": "E",
+    "Prebenjamín": "PB",
+    "Benjamín": "B",
+    "Alevín": "A",
+    "Infantil": "I",
+    "Cadete": "CA",
+}
+
+
+def buscar_videos_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path="credenciales.json"):
+    """Busca en Drive los videos de T1/T2/T3 de una categoria/semana/dia.
+    Devuelve {"1": url, "2": url, "3": url} (solo las tareas con video
+    encontrado). El 'contains' de la API de Drive hace matching difuso por
+    palabra (ej. una busqueda por '...-S2-D1-T1' tambien puede traer
+    resultados de S1/S3/D2/D3), asi que se pide por la clave del dia sin el
+    sufijo de tarea y se filtra en Python por nombre exacto (startswith)."""
+    prefijo = CATEGORIA_PREFIJO_VIDEO.get(categoria_contenido)
+    if not prefijo:
+        return {}
+    separador = "-" if len(prefijo) > 1 else ""
+    clave_dia = f"{prefijo}{separador}CM{cm}-C{ciclo}-S{semana}-D{dia}"
+    drive = _get_drive_service(credentials_path)
+    resp = drive.files().list(
+        q=f"name contains '{clave_dia}' and mimeType contains 'video/'",
+        fields="files(id,name)",
+        pageSize=50,
+    ).execute()
+    videos = {}
+    for archivo in resp.get("files", []):
+        for tarea_num in ("1", "2", "3"):
+            if archivo["name"].startswith(f"{clave_dia}-T{tarea_num}"):
+                videos[tarea_num] = f"https://drive.google.com/file/d/{archivo['id']}/view"
+    return videos
+
 
 def get_planificacion_completa(credentials_path="credenciales.json"):
     """Devuelve {(categoria, cm, ciclo, semana, dia, tarea): texto}."""
@@ -153,11 +197,34 @@ def get_planificacion_completa(credentials_path="credenciales.json"):
     return tabla
 
 
-def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, credentials_path="credenciales.json"):
+def _saludo(nombres):
+    """Replica el patron real de los correos ya enviados: nombre propio si
+    son 1 o 2 entrenadores, "equipo" a partir de 3."""
+    primeros = [n.split()[0].capitalize() for n in nombres if n.strip()]
+    if len(primeros) == 1:
+        return f"¡Hola {primeros[0]}!"
+    if len(primeros) == 2:
+        return f"¡Hola {primeros[0]}, hola {primeros[1]}!"
+    return "¡Hola equipo!"
+
+
+def _cierre(dia):
+    """Cierre fijo segun el dia (patron real: mismo tono en Dia2/Dia3,
+    distinto en Dia1). No depende del contenido de la semana, no hace
+    falta escribirlo en el Sheet."""
+    if dia == 1:
+        return "Cualquier cosa me avisan. ¡Buena semana!"
+    return "Cualquier duda, quedo a disposición. ¡Buen entrenamiento!"
+
+
+def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, nombres=None, credentials_path="credenciales.json"):
     """Arma el asunto y el cuerpo (texto plano) para categoria/cm/ciclo/
     semana/dia. Usa el contenido de la categoria espejo si corresponde
-    (Infantil Femenino -> Alevín, etc). Los links de video no estan
-    incluidos todavia (pendiente Etapa 3)."""
+    (Infantil Femenino -> Alevín, etc). Agrega el link de video de Drive a
+    T1/T2/T3 cuando lo encuentra. El "Resumen" (intro con contexto real de
+    la semana) sale del Sheet si esta escrito; si no esta, se omite esa
+    linea sin romper nada. Devuelve tambien la lista de tareas (T1/T2/T3)
+    para las que no se encontro video en Drive."""
     if planificacion is None:
         planificacion = get_planificacion_completa(credentials_path)
     categoria_contenido = CATEGORIA_ESPEJO.get(categoria, categoria)
@@ -168,29 +235,56 @@ def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, cr
 
     asunto = f"{categoria} - Ciclo {ciclo}, Semana {semana}, Día {dia}"
 
-    lineas = ["Esqueleto de la sesión:"]
+    lineas = [_saludo(nombres or [])]
+    resumen = buscar("Resumen")
+    if resumen:
+        lineas += ["", resumen]
+    lineas += ["", "Esqueleto de la sesión:"]
     for nombre, duracion in esqueleto:
         lineas.append(f"- {nombre}: {duracion}")
     lineas.append("")
 
+    videos = buscar_videos_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path)
+    videos_faltantes = []
     for tarea in ("Foco", "T0", "T1", "T2", "T3"):
         texto = buscar(tarea)
         if texto:
             lineas.append(f"{tarea}:")
             lineas.append(texto)
+            if tarea in ("T1", "T2", "T3"):
+                video = videos.get(tarea[1])
+                if video:
+                    lineas.append(f"Video: {video}")
+                else:
+                    videos_faltantes.append(tarea)
             lineas.append("")
 
+    lineas.append(_cierre(dia))
+
     cuerpo = "\n".join(lineas).strip()
-    return asunto, cuerpo
+    return asunto, cuerpo, videos_faltantes
+
+
+def categorias_del_dia(dia, credentials_path="credenciales.json"):
+    """Categorias que corresponden enviar segun el dia (1 y 2: todas las que
+    tengan destinatarios cargados; 3: solo las de CATEGORIAS_DIA3, que son
+    las que tienen 3er entrenamiento semanal)."""
+    todas = sorted(get_destinatarios(credentials_path).keys())
+    if dia == 3:
+        return [c for c in todas if c in CATEGORIAS_DIA3]
+    return todas
 
 
 def generar_preview(categoria, cm, ciclo, semana, dia, credentials_path="credenciales.json"):
-    """Arma (destinatarios, asunto, cuerpo) sin enviar nada."""
+    """Arma (destinatarios, asunto, cuerpo, videos_faltantes) sin enviar nada."""
     destinatarios = get_destinatarios(credentials_path)
     entrenadores = destinatarios.get(categoria, [])
     emails = [email for _, email in entrenadores]
-    asunto, cuerpo = armar_cuerpo_email(categoria, cm, ciclo, semana, dia, credentials_path=credentials_path)
-    return emails, asunto, cuerpo
+    nombres = [nombre for nombre, _ in entrenadores]
+    asunto, cuerpo, videos_faltantes = armar_cuerpo_email(
+        categoria, cm, ciclo, semana, dia, nombres=nombres, credentials_path=credentials_path
+    )
+    return emails, asunto, cuerpo, videos_faltantes
 
 
 def _smtp_credenciales():

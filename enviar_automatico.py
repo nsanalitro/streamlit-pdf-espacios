@@ -35,10 +35,12 @@ def main():
     log.append(f"A enviar: CM{cm}-C{ciclo}-S{semana}-D{dia} -> {em.CATEGORIAS_AUTOMATICO}")
 
     for categoria in em.CATEGORIAS_AUTOMATICO:
-        emails, asunto, cuerpo = em.generar_preview(categoria, cm, ciclo, semana, dia)
+        emails, asunto, cuerpo, videos_faltantes = em.generar_preview(categoria, cm, ciclo, semana, dia)
         if not emails:
             log.append(f"  {categoria}: SIN DESTINATARIOS, se salteó.")
             continue
+        if videos_faltantes:
+            log.append(f"  {categoria}: falta video en {videos_faltantes}, se envía igual sin ese link.")
         if dry_run:
             log.append(f"  [DRY_RUN] {categoria} -> {emails} | {asunto}")
         else:

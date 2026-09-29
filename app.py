@@ -92,15 +92,7 @@ with tab_correos:
         "(arma la vista previa; no envía nada hasta que lo confirmes)."
     )
 
-    try:
-        categorias_disponibles = sorted(em.get_destinatarios().keys())
-    except Exception as e:
-        st.error(f"No se pudo conectar con el Sheet de entrenadores: {e}")
-        st.stop()
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1:
-        categoria = st.selectbox("Categoría", categorias_disponibles)
+    c2, c3, c4, c5 = st.columns(4)
     with c2:
         cm = st.selectbox("Ciclo Matriz", [1, 2, 3])
     with c3:
@@ -115,47 +107,77 @@ with tab_correos:
     _, col_boton_correo, _ = st.columns([1, 2, 1])
     with col_boton_correo:
         sincronizar = st.button(
-            "Sincronizar y Enviar Correos Ahora",
+            "Sincronizar y Armar Correos",
             type="primary",
             use_container_width=True,
             key="btn_correos",
         )
 
+    clave_actual = (cm, ciclo, semana, dia_correo)
+
     if sincronizar:
         try:
-            emails, asunto, cuerpo = em.generar_preview(categoria, cm, ciclo, semana, dia_correo)
-            st.session_state.preview_correo = {
-                "emails": emails,
-                "asunto": asunto,
-                "cuerpo": cuerpo,
-                "clave": (categoria, cm, ciclo, semana, dia_correo),
-            }
+            categorias = em.categorias_del_dia(dia_correo)
+            previews = []
+            for categoria in categorias:
+                emails, asunto, cuerpo, videos_faltantes = em.generar_preview(categoria, cm, ciclo, semana, dia_correo)
+                previews.append({
+                    "categoria": categoria,
+                    "emails": emails,
+                    "asunto": asunto,
+                    "cuerpo": cuerpo,
+                    "videos_faltantes": videos_faltantes,
+                })
+            st.session_state.preview_correos = {"clave": clave_actual, "items": previews}
         except Exception as e:
-            st.session_state.preview_correo = None
+            st.session_state.preview_correos = None
             st.error(f"No se pudo generar la vista previa: {e}")
 
-    preview = st.session_state.get("preview_correo")
-    if preview and preview["clave"] == (categoria, cm, ciclo, semana, dia_correo):
-        st.subheader("Vista previa")
-        if not preview["emails"]:
-            st.warning(f"No hay entrenadores cargados para la categoría '{categoria}'.")
-        else:
-            st.write("**Para:** " + ", ".join(preview["emails"]))
-            st.write("**Asunto:** " + preview["asunto"])
-            st.text_area("Cuerpo del correo", preview["cuerpo"], height=300)
+    estado = st.session_state.get("preview_correos")
+    if estado and estado["clave"] == clave_actual:
+        items = estado["items"]
+        st.subheader(f"Vista previa — {len(items)} categorías")
 
-            _, col_confirmar, _ = st.columns([1, 2, 1])
-            with col_confirmar:
-                confirmar = st.button(
-                    "Confirmar y Enviar",
-                    type="secondary",
-                    use_container_width=True,
-                    disabled=not preview["emails"],
-                )
-            if confirmar:
+        for item in items:
+            avisos = []
+            if not item["emails"]:
+                avisos.append("sin destinatarios")
+            if item["videos_faltantes"]:
+                avisos.append(f"falta video en {', '.join(item['videos_faltantes'])}")
+            titulo = f"{item['categoria']}" + (f" ⚠️ {' | '.join(avisos)}" if avisos else "")
+            with st.expander(titulo):
+                if not item["emails"]:
+                    st.warning(f"No hay entrenadores cargados para '{item['categoria']}'.")
+                else:
+                    st.write("**Para:** " + ", ".join(item["emails"]))
+                if item["videos_faltantes"]:
+                    st.warning(
+                        f"No se encontró video en Drive para: {', '.join(item['videos_faltantes'])}. "
+                        "El correo se puede mandar igual, sin ese link."
+                    )
+                st.write("**Asunto:** " + item["asunto"])
+                st.text_area("Cuerpo del correo", item["cuerpo"], height=250, key=f"cuerpo_{item['categoria']}")
+
+        enviables = [item for item in items if item["emails"]]
+        _, col_confirmar, _ = st.columns([1, 2, 1])
+        with col_confirmar:
+            confirmar = st.button(
+                f"Confirmar y Enviar a Todos ({len(enviables)})",
+                type="secondary",
+                use_container_width=True,
+                disabled=not enviables,
+            )
+        if confirmar:
+            resultados = []
+            for item in enviables:
                 try:
-                    em.enviar_correo(preview["emails"], preview["asunto"], preview["cuerpo"])
-                    st.success("Correo enviado.")
-                    st.session_state.preview_correo = None
+                    em.enviar_correo(item["emails"], item["asunto"], item["cuerpo"])
+                    resultados.append((item["categoria"], True, None))
                 except Exception as e:
-                    st.error(f"No se pudo enviar el correo: {e}")
+                    resultados.append((item["categoria"], False, str(e)))
+            for categoria, ok, error in resultados:
+                if ok:
+                    st.success(f"{categoria}: enviado.")
+                else:
+                    st.error(f"{categoria}: no se pudo enviar — {error}")
+            st.session_state.preview_correos = None
