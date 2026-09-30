@@ -3,6 +3,7 @@ entrenadores por SMTP, sin intervencion de un LLM."""
 
 import re
 import smtplib
+from concurrent.futures import ThreadPoolExecutor
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -69,8 +70,12 @@ def _get_client(credentials_path="credenciales.json"):
     return gspread.authorize(_get_credentials(credentials_path))
 
 
-def _get_drive_service(credentials_path="credenciales.json"):
-    return build("drive", "v3", credentials=_get_credentials(credentials_path))
+def _get_drive_service(credentials_path="credenciales.json", creds=None):
+    # 'creds' permite reusar las mismas credenciales ya resueltas (evita
+    # pedir un token nuevo por cada hilo al paralelizar llamadas a Drive);
+    # build() igual arma un transporte HTTP nuevo cada vez, asi que cada
+    # hilo tiene su propia conexion (httplib2.Http no es thread-safe).
+    return build("drive", "v3", credentials=creds or _get_credentials(credentials_path))
 
 
 def _categoria_base(categoria_raw):
@@ -158,11 +163,11 @@ CATEGORIA_PREFIJO_VIDEO = {
 }
 
 
-def buscar_videos_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path="credenciales.json"):
+def _buscar_archivos_video_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path="credenciales.json"):
     """Busca en Drive los videos de T1/T2/T3 de una categoria/semana/dia.
-    Devuelve {"1": url, "2": url, "3": url} (solo las tareas con video
-    encontrado). El 'contains' de la API de Drive hace matching difuso por
-    palabra (ej. una busqueda por '...-S2-D1-T1' tambien puede traer
+    Devuelve {"1": file_id, "2": file_id, "3": file_id} (solo las tareas con
+    video encontrado). El 'contains' de la API de Drive hace matching difuso
+    por palabra (ej. una busqueda por '...-S2-D1-T1' tambien puede traer
     resultados de S1/S3/D2/D3), asi que se pide por la clave del dia sin el
     sufijo de tarea y se filtra en Python por nombre exacto (startswith)."""
     prefijo = CATEGORIA_PREFIJO_VIDEO.get(categoria_contenido)
@@ -176,12 +181,79 @@ def buscar_videos_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_p
         fields="files(id,name)",
         pageSize=50,
     ).execute()
-    videos = {}
+    ids = {}
     for archivo in resp.get("files", []):
         for tarea_num in ("1", "2", "3"):
             if archivo["name"].startswith(f"{clave_dia}-T{tarea_num}"):
-                videos[tarea_num] = f"https://drive.google.com/file/d/{archivo['id']}/view"
-    return videos
+                ids[tarea_num] = archivo["id"]
+    return ids
+
+
+def buscar_videos_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path="credenciales.json"):
+    """Devuelve {"1": url, "2": url, "3": url} (solo las tareas con video
+    encontrado), para mostrar en la vista previa. No otorga permisos de
+    acceso; eso lo hace compartir_videos_con_destinatarios, recien al
+    momento de enviar."""
+    ids = _buscar_archivos_video_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path)
+    return {tarea_num: f"https://drive.google.com/file/d/{file_id}/view" for tarea_num, file_id in ids.items()}
+
+
+def _permisos_existentes(file_id, creds):
+    try:
+        drive = _get_drive_service(creds=creds)
+        archivo = drive.files().get(fileId=file_id, fields="permissions").execute()
+        return file_id, {
+            p.get("emailAddress", "").lower()
+            for p in archivo.get("permissions", [])
+            if p.get("type") == "user"
+        }
+    except Exception:
+        return file_id, set()
+
+
+def _otorgar_permiso(file_id, email, creds):
+    try:
+        drive = _get_drive_service(creds=creds)
+        drive.permissions().create(
+            fileId=file_id,
+            body={"type": "user", "role": "reader", "emailAddress": email},
+            fields="id",
+            sendNotificationEmail=False,
+        ).execute()
+    except Exception:
+        pass
+
+
+def compartir_videos_con_destinatarios(categoria, cm, ciclo, semana, dia, emails, credentials_path="credenciales.json"):
+    """Comparte (rol lector) cada video de T1/T2/T3 de esa categoria/semana/
+    dia con cada email de destinatarios que todavia no lo tenga. Se llama
+    recien al confirmar el envio (no al armar la vista previa) para no
+    repetir llamadas a la API de Drive cada vez que se revisa un preview.
+    Un error de permisos en un video puntual no frena a los demas.
+
+    Las llamadas a Drive son esperas de red, no trabajo de CPU, asi que se
+    paralelizan con hilos (mismas credenciales para todos, pero cada hilo
+    arma su propio cliente/transporte porque httplib2.Http no es
+    thread-safe)."""
+    if not emails:
+        return
+    categoria_contenido = CATEGORIA_ESPEJO.get(categoria, categoria)
+    ids = _buscar_archivos_video_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path)
+    if not ids:
+        return
+    creds = _get_credentials(credentials_path)
+    emails_lower = {e.lower() for e in emails}
+    archivos = list(set(ids.values()))
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        existentes_por_archivo = dict(pool.map(lambda fid: _permisos_existentes(fid, creds), archivos))
+        pendientes = [
+            (file_id, email)
+            for file_id in archivos
+            for email in (emails_lower - existentes_por_archivo.get(file_id, set()))
+        ]
+        if pendientes:
+            list(pool.map(lambda par: _otorgar_permiso(par[0], par[1], creds), pendientes))
 
 
 def get_planificacion_completa(credentials_path="credenciales.json"):
