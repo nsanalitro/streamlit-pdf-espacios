@@ -43,7 +43,8 @@ def main():
             log.append(f"  {categoria}: FALTAN LOS EJERCICIOS (T1/T2/T3 vacíos), NO se envía.")
             continue
         if videos_faltantes:
-            log.append(f"  {categoria}: falta video en {videos_faltantes}, se envía igual sin ese link.")
+            log.append(f"  {categoria}: falta video en Drive para {videos_faltantes}, NO se envía.")
+            continue
         if dry_run:
             log.append(f"  [DRY_RUN] {categoria} -> {emails} | {asunto}")
         else:

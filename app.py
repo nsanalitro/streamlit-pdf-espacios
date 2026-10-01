@@ -231,19 +231,33 @@ with tab_correos:
                         "completar la planificación en el Sheet."
                     )
                 if item["videos_faltantes"]:
-                    st.warning(
-                        f"No se encontró video en Drive para: {', '.join(item['videos_faltantes'])}. "
-                        "El correo se puede mandar igual, sin ese link."
+                    st.error(
+                        f"⚠️ Todavía no está en Drive el video de: {', '.join(item['videos_faltantes'])}. "
+                        "No se puede enviar hasta que esté — esperá a que termine de subirse/procesarse "
+                        "y volvé a sincronizar."
                     )
                 st.write("**Asunto:** " + item["asunto"])
                 st.text_area("Cuerpo del correo", item["cuerpo"], height=250, key=f"cuerpo_{item['categoria']}")
 
-        enviables = [item for item in items if item["emails"] and not item["contenido_faltante"]]
-        excluidas = [item["categoria"] for item in items if item["contenido_faltante"]]
-        if excluidas:
+        enviables = [
+            item for item in items
+            if item["emails"] and not item["contenido_faltante"] and not item["videos_faltantes"]
+        ]
+        excluidas_contenido = [item["categoria"] for item in items if item["contenido_faltante"]]
+        excluidas_video = [
+            item["categoria"] for item in items
+            if item["videos_faltantes"] and not item["contenido_faltante"]
+        ]
+        if excluidas_contenido:
             st.error(
-                f"No se van a enviar (faltan ejercicios): {', '.join(excluidas)}. "
+                f"No se van a enviar (faltan ejercicios): {', '.join(excluidas_contenido)}. "
                 "Completá esa planificación en el Sheet y volvé a sincronizar."
+            )
+        if excluidas_video:
+            st.error(
+                f"No se van a enviar (falta video en Drive): {', '.join(excluidas_video)}. "
+                "Esperá a que terminen de subirse y volvé a sincronizar — o usá "
+                "\"Reenviar solo videos\" más abajo una vez que estén."
             )
         _, col_confirmar, _ = st.columns([1, 2, 1])
         with col_confirmar:
