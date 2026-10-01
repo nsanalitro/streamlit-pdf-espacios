@@ -371,6 +371,39 @@ def generar_preview(categoria, cm, ciclo, semana, dia, credentials_path="credenc
     return emails, asunto, cuerpo, videos_faltantes, contenido_faltante
 
 
+def armar_cuerpo_solo_videos(categoria, cm, ciclo, semana, dia, nombres=None, credentials_path="credenciales.json"):
+    """Arma un correo corto con unicamente los links de video (T1/T2/T3) de
+    esa categoria/semana/dia, para cuando los videos llegan despues del
+    correo principal (que ya salio sin ese link). No depende de que haya
+    texto de ejercicios cargado. Devuelve (asunto, cuerpo) o (None, None)
+    si no se encontro ningun video."""
+    categoria_contenido = CATEGORIA_ESPEJO.get(categoria, categoria)
+    videos = buscar_videos_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path)
+    if not videos:
+        return None, None
+    asunto = f"{categoria} - Videos de Ciclo {ciclo}, Semana {semana}, Día {dia}"
+    lineas = [_saludo(nombres or []), "", "Les paso los videos de esta semana que habían quedado pendientes:"]
+    for tarea_num in ("1", "2", "3"):
+        if tarea_num in videos:
+            lineas += ["", f"T{tarea_num}: {videos[tarea_num]}"]
+    lineas += ["", _cierre(dia)]
+    cuerpo = "\n".join(lineas).strip()
+    return asunto, cuerpo
+
+
+def generar_preview_videos(categoria, cm, ciclo, semana, dia, credentials_path="credenciales.json"):
+    """(emails, asunto, cuerpo) para el correo de 'solo videos'. cuerpo es
+    None si no se encontro ningun video para esta combinacion."""
+    destinatarios = get_destinatarios(credentials_path)
+    entrenadores = destinatarios.get(categoria, [])
+    emails = [email for _, email in entrenadores]
+    nombres = [nombre for nombre, _ in entrenadores]
+    asunto, cuerpo = armar_cuerpo_solo_videos(
+        categoria, cm, ciclo, semana, dia, nombres=nombres, credentials_path=credentials_path
+    )
+    return emails, asunto, cuerpo
+
+
 def _smtp_credenciales():
     try:
         import streamlit as st

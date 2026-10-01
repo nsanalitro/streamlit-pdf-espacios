@@ -278,3 +278,57 @@ with tab_correos:
                 else:
                     st.error(f"{categoria}: no se pudo enviar — {error}")
             st.session_state.preview_correos = None
+
+    st.divider()
+    st.subheader("Reenviar solo videos")
+    st.caption(
+        "Para cuando el video llega después del correo principal (que ya salió sin ese link). "
+        "No hace falta que haya texto de ejercicios cargado."
+    )
+
+    try:
+        categorias_video = sorted(em.get_destinatarios().keys())
+    except Exception as e:
+        categorias_video = []
+        st.error(f"No se pudo conectar con el Sheet de entrenadores: {e}")
+
+    if categorias_video:
+        vc1, vc2, vc3, vc4, vc5 = st.columns(5)
+        with vc1:
+            categoria_video = st.selectbox("Categoría", categorias_video, key="categoria_video")
+        with vc2:
+            cm_v = st.selectbox("Ciclo Matriz", [1, 2, 3], key="cm_video")
+        with vc3:
+            ciclo_v = st.selectbox("Ciclo", [1, 2, 3, 4], key="ciclo_video")
+        with vc4:
+            semana_v = st.selectbox("Semana", [1, 2, 3], key="semana_video")
+        with vc5:
+            dia_v = st.selectbox("Día", [1, 2, 3], key="dia_video")
+
+        clave_video = (categoria_video, cm_v, ciclo_v, semana_v, dia_v)
+
+        if st.button("Buscar videos", key="btn_buscar_video"):
+            emails_v, asunto_v, cuerpo_v = em.generar_preview_videos(categoria_video, cm_v, ciclo_v, semana_v, dia_v)
+            st.session_state.preview_video = {"clave": clave_video, "emails": emails_v, "asunto": asunto_v, "cuerpo": cuerpo_v}
+
+        preview_v = st.session_state.get("preview_video")
+        if preview_v and preview_v["clave"] == clave_video:
+            if not preview_v["cuerpo"]:
+                st.warning("No se encontró ningún video en Drive para esta combinación.")
+            elif not preview_v["emails"]:
+                st.warning(f"No hay entrenadores cargados para '{categoria_video}'.")
+            else:
+                st.write("**Para:** " + ", ".join(preview_v["emails"]))
+                st.write("**Asunto:** " + preview_v["asunto"])
+                st.text_area("Cuerpo del correo", preview_v["cuerpo"], height=180, key="cuerpo_video_preview")
+                if st.button("Confirmar y Enviar Video", key="btn_confirmar_video"):
+                    try:
+                        em.compartir_videos_con_destinatarios(categoria_video, cm_v, ciclo_v, semana_v, dia_v, preview_v["emails"])
+                    except Exception:
+                        pass
+                    try:
+                        em.enviar_correo(preview_v["emails"], preview_v["asunto"], preview_v["cuerpo"])
+                        st.success(f"{categoria_video}: video enviado.")
+                        st.session_state.preview_video = None
+                    except Exception as e:
+                        st.error(f"No se pudo enviar: {e}")
