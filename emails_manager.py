@@ -289,6 +289,14 @@ def _cierre(dia):
     return "Cualquier duda, quedo a disposición. ¡Buen entrenamiento!"
 
 
+PLACEHOLDER_TEXTO = "Completar planificacion en el Sheet"
+
+
+def _es_real(texto):
+    """True si hay un ejercicio de verdad cargado (no vacio, no placeholder)."""
+    return bool(texto) and PLACEHOLDER_TEXTO not in texto
+
+
 def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, nombres=None, credentials_path="credenciales.json"):
     """Arma el asunto y el cuerpo (texto plano) para categoria/cm/ciclo/
     semana/dia. Usa el contenido de la categoria espejo si corresponde
@@ -296,7 +304,9 @@ def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, no
     T1/T2/T3 cuando lo encuentra. El "Resumen" (intro con contexto real de
     la semana) sale del Sheet si esta escrito; si no esta, se omite esa
     linea sin romper nada. Devuelve tambien la lista de tareas (T1/T2/T3)
-    para las que no se encontro video en Drive."""
+    para las que no se encontro video en Drive, y si faltan los ejercicios
+    principales (T1/T2/T3 vacios o placeholder: solo quedaria el
+    esqueleto, sin contenido real)."""
     if planificacion is None:
         planificacion = get_planificacion_completa(credentials_path)
     categoria_contenido = CATEGORIA_ESPEJO.get(categoria, categoria)
@@ -334,7 +344,8 @@ def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, no
     lineas.append(_cierre(dia))
 
     cuerpo = "\n".join(lineas).strip()
-    return asunto, cuerpo, videos_faltantes
+    contenido_faltante = not any(_es_real(buscar(t)) for t in ("T1", "T2", "T3"))
+    return asunto, cuerpo, videos_faltantes, contenido_faltante
 
 
 def categorias_del_dia(dia, credentials_path="credenciales.json"):
@@ -348,15 +359,16 @@ def categorias_del_dia(dia, credentials_path="credenciales.json"):
 
 
 def generar_preview(categoria, cm, ciclo, semana, dia, credentials_path="credenciales.json"):
-    """Arma (destinatarios, asunto, cuerpo, videos_faltantes) sin enviar nada."""
+    """Arma (destinatarios, asunto, cuerpo, videos_faltantes, contenido_faltante)
+    sin enviar nada."""
     destinatarios = get_destinatarios(credentials_path)
     entrenadores = destinatarios.get(categoria, [])
     emails = [email for _, email in entrenadores]
     nombres = [nombre for nombre, _ in entrenadores]
-    asunto, cuerpo, videos_faltantes = armar_cuerpo_email(
+    asunto, cuerpo, videos_faltantes, contenido_faltante = armar_cuerpo_email(
         categoria, cm, ciclo, semana, dia, nombres=nombres, credentials_path=credentials_path
     )
-    return emails, asunto, cuerpo, videos_faltantes
+    return emails, asunto, cuerpo, videos_faltantes, contenido_faltante
 
 
 def _smtp_credenciales():

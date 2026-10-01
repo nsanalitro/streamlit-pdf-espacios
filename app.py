@@ -185,13 +185,16 @@ with tab_correos:
         try:
             previews = []
             for i, categoria in enumerate(categorias):
-                emails, asunto, cuerpo, videos_faltantes = em.generar_preview(categoria, cm, ciclo, semana, dia_correo)
+                emails, asunto, cuerpo, videos_faltantes, contenido_faltante = em.generar_preview(
+                    categoria, cm, ciclo, semana, dia_correo
+                )
                 previews.append({
                     "categoria": categoria,
                     "emails": emails,
                     "asunto": asunto,
                     "cuerpo": cuerpo,
                     "videos_faltantes": videos_faltantes,
+                    "contenido_faltante": contenido_faltante,
                 })
                 pct = int((i + 1) / total * 100)
                 progress.progress(pct, text=f"Armando vista previa... {i + 1}/{total} ({pct}%)")
@@ -211,6 +214,8 @@ with tab_correos:
             avisos = []
             if not item["emails"]:
                 avisos.append("sin destinatarios")
+            if item["contenido_faltante"]:
+                avisos.append("FALTAN LOS EJERCICIOS")
             if item["videos_faltantes"]:
                 avisos.append(f"falta video en {', '.join(item['videos_faltantes'])}")
             titulo = f"{item['categoria']}" + (f" ⚠️ {' | '.join(avisos)}" if avisos else "")
@@ -219,6 +224,12 @@ with tab_correos:
                     st.warning(f"No hay entrenadores cargados para '{item['categoria']}'.")
                 else:
                     st.write("**Para:** " + ", ".join(item["emails"]))
+                if item["contenido_faltante"]:
+                    st.error(
+                        f"⚠️ No hay ejercicios cargados (T1/T2/T3) para '{item['categoria']}' en este Ciclo/"
+                        "Semana/Día — el correo saldría con el esqueleto vacío. No se puede enviar hasta "
+                        "completar la planificación en el Sheet."
+                    )
                 if item["videos_faltantes"]:
                     st.warning(
                         f"No se encontró video en Drive para: {', '.join(item['videos_faltantes'])}. "
@@ -227,7 +238,13 @@ with tab_correos:
                 st.write("**Asunto:** " + item["asunto"])
                 st.text_area("Cuerpo del correo", item["cuerpo"], height=250, key=f"cuerpo_{item['categoria']}")
 
-        enviables = [item for item in items if item["emails"]]
+        enviables = [item for item in items if item["emails"] and not item["contenido_faltante"]]
+        excluidas = [item["categoria"] for item in items if item["contenido_faltante"]]
+        if excluidas:
+            st.error(
+                f"No se van a enviar (faltan ejercicios): {', '.join(excluidas)}. "
+                "Completá esa planificación en el Sheet y volvé a sincronizar."
+            )
         _, col_confirmar, _ = st.columns([1, 2, 1])
         with col_confirmar:
             confirmar = st.button(
@@ -242,6 +259,12 @@ with tab_correos:
             resultados = []
             for i, item in enumerate(enviables):
                 try:
+                    try:
+                        em.compartir_videos_con_destinatarios(
+                            item["categoria"], cm, ciclo, semana, dia_correo, item["emails"]
+                        )
+                    except Exception:
+                        pass  # si falla el permiso, igual se manda el correo
                     em.enviar_correo(item["emails"], item["asunto"], item["cuerpo"])
                     resultados.append((item["categoria"], True, None))
                 except Exception as e:
