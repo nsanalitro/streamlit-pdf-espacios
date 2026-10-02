@@ -155,15 +155,65 @@ with tab_correos:
         "(arma la vista previa; no envía nada hasta que lo confirmes)."
     )
 
+    @st.cache_data(ttl=60)
+    def _historial_envios():
+        return em.leer_historial()
+
+    @st.cache_data(ttl=300)
+    def _categorias_con_entrenadores():
+        return sorted(em.get_destinatarios().keys())
+
+    try:
+        ultimo = em.resumen_ultimo_envio(_historial_envios())
+    except Exception:
+        ultimo = None
+
+    sugerido = (1, 1, 1, 1)
+    if ultimo:
+        cm_u, ciclo_u, semana_u, dia_u = ultimo["clave"]
+        sugerido = em.siguiente_clave(ultimo["clave"]) or ultimo["clave"]
+        texto_ultimo = (
+            f"**Último día enviado:** Ciclo Matriz {cm_u} · Ciclo {ciclo_u} · Semana {semana_u} · "
+            f"Día {dia_u} ({ultimo['fecha']})"
+        )
+        sig_cm, sig_ciclo, sig_semana, sig_dia = sugerido
+        texto_ultimo += (
+            f"  \n**Siguiente:** Ciclo Matriz {sig_cm} · Ciclo {sig_ciclo} · Semana {sig_semana} · "
+            f"Día {sig_dia} (ya preseleccionado abajo)"
+        )
+        st.success(texto_ultimo)
+        if ultimo["incompletas"]:
+            st.warning(
+                f"Ese día salió **incompleto** (sin ejercicios) en: {', '.join(ultimo['incompletas'])}."
+            )
+    else:
+        st.info("Todavía no hay envíos registrados desde la app.")
+
+    resultado_envio = st.session_state.get("resultado_envio")
+    if resultado_envio:
+        for categoria_r, ok_r, error_r in resultado_envio["resultados"]:
+            if ok_r:
+                st.success(f"{categoria_r}: enviado.")
+            else:
+                st.error(f"{categoria_r}: no se pudo enviar — {error_r}")
+        if resultado_envio["fallas_permiso"]:
+            detalle = "; ".join(f"{email} ({motivo})" for _, email, motivo in resultado_envio["fallas_permiso"])
+            st.warning(
+                "El correo salió, pero **no se pudo dar acceso a los videos** de Drive a: "
+                f"{detalle}. Esas personas van a ver el pedido de permiso."
+            )
+        if resultado_envio["error_registro"]:
+            st.warning(f"Se enviaron, pero no se pudo anotar en el historial: {resultado_envio['error_registro']}")
+
     c2, c3, c4, c5 = st.columns(4)
     with c2:
-        cm = st.selectbox("Ciclo Matriz", [1, 2, 3])
+        cm = st.selectbox("Ciclo Matriz", [1, 2, 3], index=sugerido[0] - 1)
     with c3:
-        ciclo = st.selectbox("Ciclo", [1, 2, 3, 4])
+        ciclo = st.selectbox("Ciclo", [1, 2, 3, 4], index=sugerido[1] - 1)
     with c4:
-        semana = st.selectbox("Semana", [1, 2, 3])
+        semana = st.selectbox("Semana", [1, 2, 3], index=sugerido[2] - 1)
     with c5:
-        dia_correo = st.selectbox("Día", [1, 2, 3], key="dia_correo")
+        dia_correo = st.selectbox("Día", [1, 2, 3], index=sugerido[3] - 1)
 
     st.divider()
 
@@ -179,14 +229,22 @@ with tab_correos:
     clave_actual = (cm, ciclo, semana, dia_correo)
 
     if sincronizar:
+        st.session_state.resultado_envio = None
         categorias = em.categorias_del_dia(dia_correo)
         total = len(categorias)
         progress = st.progress(0, text=f"Armando vista previa... 0/{total}")
         try:
+            try:
+                ya_enviadas = em.categorias_ya_enviadas(em.leer_historial(), clave_actual)
+            except Exception:
+                ya_enviadas = {}
+            destinatarios_todos = em.get_destinatarios()
+            planificacion_toda = em.get_planificacion_completa()
             previews = []
             for i, categoria in enumerate(categorias):
                 emails, asunto, cuerpo, videos_faltantes, contenido_faltante = em.generar_preview(
-                    categoria, cm, ciclo, semana, dia_correo
+                    categoria, cm, ciclo, semana, dia_correo,
+                    destinatarios=destinatarios_todos, planificacion=planificacion_toda,
                 )
                 previews.append({
                     "categoria": categoria,
@@ -195,6 +253,7 @@ with tab_correos:
                     "cuerpo": cuerpo,
                     "videos_faltantes": videos_faltantes,
                     "contenido_faltante": contenido_faltante,
+                    "ya_enviado": ya_enviadas.get(categoria),
                 })
                 pct = int((i + 1) / total * 100)
                 progress.progress(pct, text=f"Armando vista previa... {i + 1}/{total} ({pct}%)")
@@ -214,6 +273,8 @@ with tab_correos:
             avisos = []
             if not item["emails"]:
                 avisos.append("sin destinatarios")
+            if item["ya_enviado"]:
+                avisos.append(f"YA ENVIADO el {item['ya_enviado']}")
             if item["contenido_faltante"]:
                 avisos.append("FALTAN LOS EJERCICIOS")
             if item["videos_faltantes"]:
@@ -224,6 +285,11 @@ with tab_correos:
                     st.warning(f"No hay entrenadores cargados para '{item['categoria']}'.")
                 else:
                     st.write("**Para:** " + ", ".join(item["emails"]))
+                if item["ya_enviado"]:
+                    st.info(
+                        f"Esta categoría ya recibió el correo completo de este día ({item['ya_enviado']}). "
+                        "Por defecto no se vuelve a enviar."
+                    )
                 if item["contenido_faltante"]:
                     st.error(
                         f"⚠️ No hay ejercicios cargados (T1/T2/T3) para '{item['categoria']}' en este Ciclo/"
@@ -239,9 +305,19 @@ with tab_correos:
                 st.write("**Asunto:** " + item["asunto"])
                 st.text_area("Cuerpo del correo", item["cuerpo"], height=250, key=f"cuerpo_{item['categoria']}")
 
+        hay_ya_enviadas = any(item["ya_enviado"] for item in items)
+        incluir_ya_enviadas = False
+        if hay_ya_enviadas:
+            incluir_ya_enviadas = st.checkbox(
+                "Reenviar también a las categorías que ya recibieron este día",
+                value=False,
+            )
         enviables = [
             item for item in items
-            if item["emails"] and not item["contenido_faltante"] and not item["videos_faltantes"]
+            if item["emails"]
+            and not item["contenido_faltante"]
+            and not item["videos_faltantes"]
+            and (incluir_ya_enviadas or not item["ya_enviado"])
         ]
         excluidas_contenido = [item["categoria"] for item in items if item["contenido_faltante"]]
         excluidas_video = [
@@ -271,14 +347,13 @@ with tab_correos:
             total_enviables = len(enviables)
             progress_envio = st.progress(0, text=f"Enviando... 0/{total_enviables}")
             resultados = []
+            fallas_permiso = []
             for i, item in enumerate(enviables):
                 try:
                     try:
-                        em.compartir_videos_con_destinatarios(
-                            item["categoria"], cm, ciclo, semana, dia_correo, item["emails"]
-                        )
-                    except Exception:
-                        pass  # si falla el permiso, igual se manda el correo
+                        fallas_permiso += em.compartir_videos_con_destinatarios(item["cuerpo"], item["emails"])
+                    except Exception as e:
+                        fallas_permiso.append(("", ", ".join(item["emails"]), f"{item['categoria']}: {e}"))
                     em.enviar_correo(item["emails"], item["asunto"], item["cuerpo"])
                     resultados.append((item["categoria"], True, None))
                 except Exception as e:
@@ -286,12 +361,28 @@ with tab_correos:
                 pct = int((i + 1) / total_enviables * 100)
                 progress_envio.progress(pct, text=f"Enviando... {i + 1}/{total_enviables} ({pct}%)")
             progress_envio.empty()
-            for categoria, ok, error in resultados:
-                if ok:
-                    st.success(f"{categoria}: enviado.")
-                else:
-                    st.error(f"{categoria}: no se pudo enviar — {error}")
+
+            error_registro = None
+            enviadas = [categoria for categoria, ok, _ in resultados if ok]
+            if enviadas:
+                try:
+                    em.registrar_envios(cm, ciclo, semana, dia_correo, enviadas)
+                    estado_actual = em.leer_estado()
+                    if clave_actual > (
+                        estado_actual["cm"], estado_actual["ciclo"], estado_actual["semana"], estado_actual["dia"]
+                    ):
+                        em.actualizar_estado(*clave_actual)
+                except Exception as e:
+                    error_registro = str(e)
+
+            st.session_state.resultado_envio = {
+                "resultados": resultados,
+                "fallas_permiso": fallas_permiso,
+                "error_registro": error_registro,
+            }
             st.session_state.preview_correos = None
+            _historial_envios.clear()
+            st.rerun()
 
     st.divider()
     st.subheader("Reenviar solo videos")
@@ -337,11 +428,18 @@ with tab_correos:
                 st.text_area("Cuerpo del correo", preview_v["cuerpo"], height=180, key="cuerpo_video_preview")
                 if st.button("Confirmar y Enviar Video", key="btn_confirmar_video"):
                     try:
-                        em.compartir_videos_con_destinatarios(categoria_video, cm_v, ciclo_v, semana_v, dia_v, preview_v["emails"])
-                    except Exception:
-                        pass
+                        fallas_v = em.compartir_videos_con_destinatarios(preview_v["cuerpo"], preview_v["emails"])
+                    except Exception as e:
+                        fallas_v = [("", ", ".join(preview_v["emails"]), str(e))]
+                    if fallas_v:
+                        detalle_v = "; ".join(f"{email} ({motivo})" for _, email, motivo in fallas_v)
+                        st.warning(f"No se pudo dar acceso a los videos a: {detalle_v}.")
                     try:
                         em.enviar_correo(preview_v["emails"], preview_v["asunto"], preview_v["cuerpo"])
+                        try:
+                            em.registrar_envios(cm_v, ciclo_v, semana_v, dia_v, [categoria_video], tipo="videos")
+                        except Exception:
+                            pass
                         st.success(f"{categoria_video}: video enviado.")
                         st.session_state.preview_video = None
                     except Exception as e:

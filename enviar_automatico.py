@@ -34,6 +34,7 @@ def main():
     cm, ciclo, semana, dia = siguiente
     log.append(f"A enviar: CM{cm}-C{ciclo}-S{semana}-D{dia} -> {em.CATEGORIAS_AUTOMATICO}")
 
+    enviadas = []
     for categoria in em.CATEGORIAS_AUTOMATICO:
         emails, asunto, cuerpo, videos_faltantes, contenido_faltante = em.generar_preview(categoria, cm, ciclo, semana, dia)
         if not emails:
@@ -48,14 +49,20 @@ def main():
         if dry_run:
             log.append(f"  [DRY_RUN] {categoria} -> {emails} | {asunto}")
         else:
+            for _, email, motivo in em.compartir_videos_con_destinatarios(cuerpo, emails):
+                log.append(f"  {categoria}: NO se pudo dar acceso a los videos a {email} ({motivo})")
             em.enviar_correo(emails, asunto, cuerpo)
+            enviadas.append(categoria)
             log.append(f"  ENVIADO {categoria} -> {emails} | {asunto}")
 
     if dry_run:
         log.append("[DRY_RUN] Estado NO actualizado.")
-    else:
+    elif enviadas:
+        em.registrar_envios(cm, ciclo, semana, dia, enviadas)
         em.actualizar_estado(cm, ciclo, semana, dia)
         log.append(f"Estado actualizado a CM{cm}-C{ciclo}-S{semana}-D{dia}.")
+    else:
+        log.append("No se envió ninguna categoría: Estado NO actualizado.")
 
     _escribir_log(log)
 

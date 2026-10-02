@@ -10,6 +10,7 @@ from email.mime.text import MIMEText
 import gspread
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -169,24 +170,33 @@ def _buscar_archivos_video_dia(categoria_contenido, cm, ciclo, semana, dia, cred
     video encontrado). El 'contains' de la API de Drive hace matching difuso
     por palabra (ej. una busqueda por '...-S2-D1-T1' tambien puede traer
     resultados de S1/S3/D2/D3), asi que se pide por la clave del dia sin el
-    sufijo de tarea y se filtra en Python por nombre exacto (startswith)."""
+    sufijo de tarea, se recorren todas las paginas y se filtra en Python por
+    nombre exacto (startswith). Si hay archivos duplicados con la misma
+    clave (pasa cuando Drive re-sube/copia videos), gana el creado mas
+    recientemente, para que la eleccion sea siempre la misma."""
     prefijo = CATEGORIA_PREFIJO_VIDEO.get(categoria_contenido)
     if not prefijo:
         return {}
     separador = "-" if len(prefijo) > 1 else ""
     clave_dia = f"{prefijo}{separador}CM{cm}-C{ciclo}-S{semana}-D{dia}"
     drive = _get_drive_service(credentials_path)
-    resp = drive.files().list(
-        q=f"name contains '{clave_dia}' and mimeType contains 'video/'",
-        fields="files(id,name)",
-        pageSize=50,
-    ).execute()
-    ids = {}
-    for archivo in resp.get("files", []):
-        for tarea_num in ("1", "2", "3"):
-            if archivo["name"].startswith(f"{clave_dia}-T{tarea_num}"):
-                ids[tarea_num] = archivo["id"]
-    return ids
+    ids, creados, pagina = {}, {}, None
+    while True:
+        resp = drive.files().list(
+            q=f"name contains '{clave_dia}' and mimeType contains 'video/'",
+            fields="nextPageToken,files(id,name,createdTime)",
+            pageSize=100,
+            pageToken=pagina,
+        ).execute()
+        for archivo in resp.get("files", []):
+            for tarea_num in ("1", "2", "3"):
+                if archivo["name"].startswith(f"{clave_dia}-T{tarea_num}"):
+                    if tarea_num not in creados or archivo["createdTime"] > creados[tarea_num]:
+                        ids[tarea_num] = archivo["id"]
+                        creados[tarea_num] = archivo["createdTime"]
+        pagina = resp.get("nextPageToken")
+        if not pagina:
+            return ids
 
 
 def buscar_videos_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path="credenciales.json"):
@@ -212,6 +222,7 @@ def _permisos_existentes(file_id, creds):
 
 
 def _otorgar_permiso(file_id, email, creds):
+    """None si se otorgo; (file_id, email, motivo) si fallo."""
     try:
         drive = _get_drive_service(creds=creds)
         drive.permissions().create(
@@ -220,30 +231,33 @@ def _otorgar_permiso(file_id, email, creds):
             fields="id",
             sendNotificationEmail=False,
         ).execute()
-    except Exception:
-        pass
+        return None
+    except HttpError as e:
+        return (file_id, email, f"{e.resp.status} {getattr(e, 'reason', e)}")
+    except Exception as e:
+        return (file_id, email, str(e)[:120])
 
 
-def compartir_videos_con_destinatarios(categoria, cm, ciclo, semana, dia, emails, credentials_path="credenciales.json"):
-    """Comparte (rol lector) cada video de T1/T2/T3 de esa categoria/semana/
-    dia con cada email de destinatarios que todavia no lo tenga. Se llama
-    recien al confirmar el envio (no al armar la vista previa) para no
-    repetir llamadas a la API de Drive cada vez que se revisa un preview.
-    Un error de permisos en un video puntual no frena a los demas.
+_RE_VIDEO_ID = re.compile(r"drive\.google\.com/file/d/([A-Za-z0-9_-]+)/view")
+
+
+def compartir_videos_con_destinatarios(cuerpo, emails, credentials_path="credenciales.json"):
+    """Da acceso de lector a cada entrenador sobre los videos de Drive que
+    linkea el correo. Los archivos se leen del propio cuerpo (no se vuelven
+    a buscar), asi lo compartido es siempre exactamente lo que dice el link,
+    aunque haya archivos duplicados en Drive. Solo agrega a quien todavia no
+    tiene acceso. Se llama al confirmar el envio, no al armar la vista
+    previa. Devuelve la lista de fallas [(file_id, email, motivo)].
 
     Las llamadas a Drive son esperas de red, no trabajo de CPU, asi que se
     paralelizan con hilos (mismas credenciales para todos, pero cada hilo
     arma su propio cliente/transporte porque httplib2.Http no es
     thread-safe)."""
-    if not emails:
-        return
-    categoria_contenido = CATEGORIA_ESPEJO.get(categoria, categoria)
-    ids = _buscar_archivos_video_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path)
-    if not ids:
-        return
+    archivos = list(dict.fromkeys(_RE_VIDEO_ID.findall(cuerpo or "")))
+    if not emails or not archivos:
+        return []
     creds = _get_credentials(credentials_path)
     emails_lower = {e.lower() for e in emails}
-    archivos = list(set(ids.values()))
 
     with ThreadPoolExecutor(max_workers=10) as pool:
         existentes_por_archivo = dict(pool.map(lambda fid: _permisos_existentes(fid, creds), archivos))
@@ -252,8 +266,8 @@ def compartir_videos_con_destinatarios(categoria, cm, ciclo, semana, dia, emails
             for file_id in archivos
             for email in (emails_lower - existentes_por_archivo.get(file_id, set()))
         ]
-        if pendientes:
-            list(pool.map(lambda par: _otorgar_permiso(par[0], par[1], creds), pendientes))
+        resultados = pool.map(lambda par: _otorgar_permiso(par[0], par[1], creds), pendientes)
+        return [r for r in resultados if r]
 
 
 def get_planificacion_completa(credentials_path="credenciales.json"):
@@ -358,15 +372,17 @@ def categorias_del_dia(dia, credentials_path="credenciales.json"):
     return todas
 
 
-def generar_preview(categoria, cm, ciclo, semana, dia, credentials_path="credenciales.json"):
+def generar_preview(categoria, cm, ciclo, semana, dia, credentials_path="credenciales.json", destinatarios=None, planificacion=None):
     """Arma (destinatarios, asunto, cuerpo, videos_faltantes, contenido_faltante)
-    sin enviar nada."""
-    destinatarios = get_destinatarios(credentials_path)
+    sin enviar nada. 'destinatarios' y 'planificacion' se pueden pasar ya
+    leidos para no volver a bajar los Sheets completos por cada categoria."""
+    if destinatarios is None:
+        destinatarios = get_destinatarios(credentials_path)
     entrenadores = destinatarios.get(categoria, [])
     emails = [email for _, email in entrenadores]
     nombres = [nombre for nombre, _ in entrenadores]
     asunto, cuerpo, videos_faltantes, contenido_faltante = armar_cuerpo_email(
-        categoria, cm, ciclo, semana, dia, nombres=nombres, credentials_path=credentials_path
+        categoria, cm, ciclo, semana, dia, planificacion=planificacion, nombres=nombres, credentials_path=credentials_path
     )
     return emails, asunto, cuerpo, videos_faltantes, contenido_faltante
 
@@ -482,3 +498,95 @@ def calcular_siguiente_envio(dia_semana, estado):
             return None  # el Dia2 de esta semana todavia no salio, o el Dia3 ya salio
         return (cm, ciclo, semana, 3)  # aplica solo a CATEGORIAS_DIA3, no a Escoleta/Prebenjamin
     return None  # Lunes/Miercoles/Sabado/Domingo: nunca corresponde nada
+
+
+HISTORIAL_TAB = "Historial_Envios"
+HISTORIAL_ENCABEZADO = ["Fecha", "CM", "Ciclo", "Semana", "Dia", "Categoria", "Tipo"]
+
+
+def _ahora_texto():
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        ahora = datetime.now(ZoneInfo("Europe/Madrid"))
+    except Exception:
+        ahora = datetime.now()
+    return ahora.strftime("%Y-%m-%d %H:%M")
+
+
+def _hoja_historial(credentials_path="credenciales.json"):
+    sh = _get_client(credentials_path).open_by_key(DESTINATARIOS_FILE_ID)
+    try:
+        return sh.worksheet(HISTORIAL_TAB)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=HISTORIAL_TAB, rows=500, cols=len(HISTORIAL_ENCABEZADO))
+        ws.update(values=[HISTORIAL_ENCABEZADO], range_name="A1", value_input_option="RAW")
+        return ws
+
+
+def registrar_envios(cm, ciclo, semana, dia, categorias, tipo="completo", fecha=None, credentials_path="credenciales.json"):
+    """Anota en Historial_Envios una fila por categoria enviada. tipo:
+    'completo' (correo principal con ejercicios), 'incompleto' (salio sin
+    ejercicios; solo para dejar asentado el pasado) o 'videos' (seguimiento
+    con solo los videos)."""
+    if not categorias:
+        return
+    ws = _hoja_historial(credentials_path)
+    fecha = fecha or _ahora_texto()
+    ws.append_rows([[fecha, cm, ciclo, semana, dia, c, tipo] for c in categorias], value_input_option="RAW")
+
+
+def leer_historial(credentials_path="credenciales.json"):
+    """Lista de dicts {fecha, clave: (cm, ciclo, semana, dia), categoria, tipo}.
+    Vacia si todavia no existe la pestana."""
+    sh = _get_client(credentials_path).open_by_key(DESTINATARIOS_FILE_ID)
+    try:
+        filas = sh.worksheet(HISTORIAL_TAB).get_all_values()
+    except gspread.WorksheetNotFound:
+        return []
+    historial = []
+    for f in filas[1:]:
+        if len(f) < 7:
+            continue
+        try:
+            clave = (int(f[1]), int(f[2]), int(f[3]), int(f[4]))
+        except ValueError:
+            continue
+        historial.append({"fecha": f[0], "clave": clave, "categoria": f[5], "tipo": f[6]})
+    return historial
+
+
+def resumen_ultimo_envio(historial):
+    """Dia mas reciente (cm, ciclo, semana, dia) con algun envio principal
+    y que categorias lo recibieron completo o incompleto. None si no hay."""
+    principales = [h for h in historial if h["tipo"] in ("completo", "incompleto")]
+    if not principales:
+        return None
+    ultima = max(h["clave"] for h in principales)
+    del_dia = [h for h in principales if h["clave"] == ultima]
+    completas = {h["categoria"] for h in del_dia if h["tipo"] == "completo"}
+    incompletas = {h["categoria"] for h in del_dia if h["tipo"] == "incompleto"} - completas
+    return {
+        "clave": ultima,
+        "fecha": max(h["fecha"] for h in del_dia),
+        "completas": sorted(completas),
+        "incompletas": sorted(incompletas),
+    }
+
+
+def categorias_ya_enviadas(historial, clave):
+    """{categoria: fecha} de las que ya recibieron el correo completo de ese dia."""
+    return {h["categoria"]: h["fecha"] for h in historial if h["clave"] == clave and h["tipo"] == "completo"}
+
+
+def siguiente_clave(clave):
+    """Dia que sigue (cm, ciclo, semana, dia): Dia1 -> Dia2 -> Dia3 -> Dia1 de
+    la semana siguiente. None si la temporada ya termino."""
+    cm, ciclo, semana, dia = clave
+    if dia < 3:
+        return (cm, ciclo, semana, dia + 1)
+    try:
+        cm2, ciclo2, semana2 = _avanzar_semana(cm, ciclo, semana)
+    except ValueError:
+        return None
+    return (cm2, ciclo2, semana2, 1)
