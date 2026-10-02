@@ -215,6 +215,12 @@ with tab_correos:
     with c5:
         dia_correo = st.selectbox("Día", [1, 2, 3], index=sugerido[3] - 1)
 
+    nota = st.text_input(
+        "Nota inicial para los correos (opcional)",
+        placeholder="Ej.: Les reenvío la sesión del jueves, esta vez con los ejercicios completos. Disculpen la confusión.",
+        help="Se agrega como primer párrafo, justo después del saludo, en todos los correos de este envío.",
+    ).strip()
+
     st.divider()
 
     _, col_boton_correo, _ = st.columns([1, 2, 1])
@@ -226,7 +232,8 @@ with tab_correos:
             key="btn_correos",
         )
 
-    clave_actual = (cm, ciclo, semana, dia_correo)
+    clave_dia = (cm, ciclo, semana, dia_correo)
+    clave_actual = clave_dia + (nota,)
 
     if sincronizar:
         st.session_state.resultado_envio = None
@@ -235,7 +242,7 @@ with tab_correos:
         progress = st.progress(0, text=f"Armando vista previa... 0/{total}")
         try:
             try:
-                ya_enviadas = em.categorias_ya_enviadas(em.leer_historial(), clave_actual)
+                ya_enviadas = em.categorias_ya_enviadas(em.leer_historial(), clave_dia)
             except Exception:
                 ya_enviadas = {}
             destinatarios_todos = em.get_destinatarios()
@@ -245,6 +252,7 @@ with tab_correos:
                 emails, asunto, cuerpo, videos_faltantes, contenido_faltante = em.generar_preview(
                     categoria, cm, ciclo, semana, dia_correo,
                     destinatarios=destinatarios_todos, planificacion=planificacion_toda,
+                    nota=nota or None,
                 )
                 previews.append({
                     "categoria": categoria,
@@ -368,10 +376,10 @@ with tab_correos:
                 try:
                     em.registrar_envios(cm, ciclo, semana, dia_correo, enviadas)
                     estado_actual = em.leer_estado()
-                    if clave_actual > (
+                    if clave_dia > (
                         estado_actual["cm"], estado_actual["ciclo"], estado_actual["semana"], estado_actual["dia"]
                     ):
-                        em.actualizar_estado(*clave_actual)
+                        em.actualizar_estado(*clave_dia)
                 except Exception as e:
                     error_registro = str(e)
 

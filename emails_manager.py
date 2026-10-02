@@ -311,7 +311,7 @@ def _es_real(texto):
     return bool(texto) and PLACEHOLDER_TEXTO not in texto
 
 
-def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, nombres=None, credentials_path="credenciales.json"):
+def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, nombres=None, credentials_path="credenciales.json", nota=None):
     """Arma el asunto y el cuerpo (texto plano) para categoria/cm/ciclo/
     semana/dia. Usa el contenido de la categoria espejo si corresponde
     (Infantil Femenino -> Alevín, etc). Agrega el link de video de Drive a
@@ -332,6 +332,8 @@ def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, no
     asunto = f"{categoria} - Ciclo {ciclo}, Semana {semana}, Día {dia}"
 
     lineas = [_saludo(nombres or [])]
+    if nota:
+        lineas += ["", nota.strip()]
     resumen = buscar("Resumen")
     if resumen:
         lineas += ["", resumen]
@@ -372,17 +374,19 @@ def categorias_del_dia(dia, credentials_path="credenciales.json"):
     return todas
 
 
-def generar_preview(categoria, cm, ciclo, semana, dia, credentials_path="credenciales.json", destinatarios=None, planificacion=None):
+def generar_preview(categoria, cm, ciclo, semana, dia, credentials_path="credenciales.json", destinatarios=None, planificacion=None, nota=None):
     """Arma (destinatarios, asunto, cuerpo, videos_faltantes, contenido_faltante)
     sin enviar nada. 'destinatarios' y 'planificacion' se pueden pasar ya
-    leidos para no volver a bajar los Sheets completos por cada categoria."""
+    leidos para no volver a bajar los Sheets completos por cada categoria.
+    'nota' (opcional) va como primer parrafo, despues del saludo."""
     if destinatarios is None:
         destinatarios = get_destinatarios(credentials_path)
     entrenadores = destinatarios.get(categoria, [])
     emails = [email for _, email in entrenadores]
     nombres = [nombre for nombre, _ in entrenadores]
     asunto, cuerpo, videos_faltantes, contenido_faltante = armar_cuerpo_email(
-        categoria, cm, ciclo, semana, dia, planificacion=planificacion, nombres=nombres, credentials_path=credentials_path
+        categoria, cm, ciclo, semana, dia, planificacion=planificacion, nombres=nombres,
+        credentials_path=credentials_path, nota=nota,
     )
     return emails, asunto, cuerpo, videos_faltantes, contenido_faltante
 
