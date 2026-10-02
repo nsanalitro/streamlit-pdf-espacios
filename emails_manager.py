@@ -105,10 +105,20 @@ def get_destinatarios(credentials_path="credenciales.json"):
     return grupos
 
 
-# Esqueletos horarios por tipo de sesion. F7 (Escoleta/Prebenjamin/Benjamin/
-# Alevin) verificado contra correos reales enviados (Gmail, Ciclo2-Semana1/2):
-# Tarea0-15'/T1-10'/T2-20'/T3-30' con transiciones de 5', total 90'.
+# Esqueletos horarios por tipo de sesion, tal cual los define la skill
+# enviar-correos-entrenadores y los correos reales enviados con ella:
+#   Escoleta 60' | F7 90' (Prebenjamin/Benjamin/Alevin) | F11 Infantil 60' y
+#   Cadete 70' (sin Tarea 0).
 ESQUELETOS = {
+    "escoleta_60": [
+        ("Tarea 0 (motricidad)", "15'"),
+        ("T1", "5'"),
+        ("Transición", "5'"),
+        ("T2", "10'"),
+        ("Transición", "5'"),
+        ("T3", "15'"),
+        ("Cierre", "5'"),
+    ],
     "f7_90": [
         ("Tarea 0 (motricidad)", "15'"),
         ("T1", "10'"),
@@ -122,7 +132,7 @@ ESQUELETOS = {
         ("Explicación", "3'"),
         ("T1", "5'"),
         ("Transición", "2'"),
-        ("T2", "25' (Bloque A 12', cambio 1', Bloque B 12')"),
+        ("T2", "25' (Bloque A 12' + cambio 1' + Bloque B 12')"),
         ("Transición", "2'"),
         ("T3", "20'"),
         ("Cierre", "3'"),
@@ -131,15 +141,22 @@ ESQUELETOS = {
         ("Explicación", "3'"),
         ("T1", "5'"),
         ("Transición", "2'"),
-        ("T2", "25' (Bloque A 12', cambio 1', Bloque B 12')"),
+        ("T2", "25' (Bloque A 12' + cambio 1' + Bloque B 12')"),
         ("Transición", "2'"),
         ("T3", "30'"),
         ("Cierre", "3'"),
     ],
 }
 
+ESQUELETO_TITULO = {
+    "escoleta_60": "ESQUELETO (60'):",
+    "f7_90": "ESQUELETO (90'):",
+    "f11_60": "ESQUELETO (60', sin Tarea 0):",
+    "f11_70": "ESQUELETO (70', sin Tarea 0):",
+}
+
 CATEGORIA_ESQUELETO = {
-    "Escoleta": "f7_90",
+    "Escoleta": "escoleta_60",
     "Prebenjamín": "f7_90",
     "Benjamín": "f7_90",
     "Alevín": "f7_90",
@@ -311,6 +328,25 @@ def _es_real(texto):
     return bool(texto) and PLACEHOLDER_TEXTO not in texto
 
 
+# Formato del cuerpo tal cual los correos reales enviados con la skill
+# (orden: saludo, intro, FOCO, ESQUELETO, TAREA 0, T1/T2/T3 con su video).
+# El Foco solo sale en las categorias cuyo Word lo trae, con su etiqueta.
+FOCO_ETIQUETA = {
+    "Prebenjamín": "FOCO DEL ENTRENADOR",
+    "Benjamín": "FOCO DEL ENTRENADOR",
+    "Alevín": "FOCO",
+    "Infantil": "FOCO DE LA SEMANA",
+    "Cadete": "FOCO DE LA SEMANA",
+}
+CATEGORIAS_F11 = {"Infantil", "Cadete"}  # sin tipo de tarea; T2 en Bloque A / Bloque B
+TIPO_TAREA_F7 = {"1": "Analítica", "2": "Facilitadora", "3": "Global"}
+FRASES_MOTIVADORAS = {
+    1: "¡A arrancar el ciclo con todo y sembrando bien las bases!",
+    2: "¡Ya le fueron tomando la mano, ahora toca exigir un poco más!",
+    3: "¡Última semana del ciclo, a cerrar con todo lo trabajado!",
+}
+
+
 def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, nombres=None, credentials_path="credenciales.json", nota=None):
     """Arma el asunto y el cuerpo (texto plano) para categoria/cm/ciclo/
     semana/dia. Usa el contenido de la categoria espejo si corresponde
@@ -324,40 +360,54 @@ def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, no
     if planificacion is None:
         planificacion = get_planificacion_completa(credentials_path)
     categoria_contenido = CATEGORIA_ESPEJO.get(categoria, categoria)
-    esqueleto = ESQUELETOS[CATEGORIA_ESQUELETO[categoria]]
+    clave_esqueleto = CATEGORIA_ESQUELETO[categoria]
+    esqueleto = ESQUELETOS[clave_esqueleto]
 
     def buscar(tarea):
         return planificacion.get((categoria_contenido, str(cm), str(ciclo), str(semana), str(dia), tarea))
 
-    asunto = f"{categoria} - Ciclo {ciclo}, Semana {semana}, Día {dia}"
+    asunto = f"{categoria} — Ciclo {ciclo}, Semana {semana}, Día {dia}"
 
     lineas = [_saludo(nombres or [])]
     if nota:
         lineas += ["", nota.strip()]
     resumen = buscar("Resumen")
     if resumen:
-        lineas += ["", resumen]
-    lineas += ["", "Esqueleto de la sesión:"]
+        lineas += ["", f"{resumen} {FRASES_MOTIVADORAS.get(int(semana), '')}".strip()]
+
+    foco = buscar("Foco")
+    if foco and categoria_contenido in FOCO_ETIQUETA:
+        lineas += ["", f"{FOCO_ETIQUETA[categoria_contenido]}: {foco}"]
+
+    lineas += ["", ESQUELETO_TITULO[clave_esqueleto]]
     for nombre, duracion in esqueleto:
-        lineas.append(f"- {nombre}: {duracion}")
-    lineas.append("")
+        lineas.append(f"{nombre}: {duracion}")
+
+    t0 = buscar("T0")
+    if t0:
+        lineas += ["", f"TAREA 0 — {t0}"]
 
     videos = buscar_videos_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path)
     videos_faltantes = []
-    for tarea in ("Foco", "T0", "T1", "T2", "T3"):
-        texto = buscar(tarea)
-        if texto:
-            lineas.append(f"{tarea}:")
-            lineas.append(texto)
-            if tarea in ("T1", "T2", "T3"):
-                video = videos.get(tarea[1])
-                if video:
-                    lineas.append(f"Video: {video}")
-                else:
-                    videos_faltantes.append(tarea)
-            lineas.append("")
+    for n in ("1", "2", "3"):
+        texto = buscar(f"T{n}")
+        if not texto:
+            continue
+        lineas.append("")
+        if categoria_contenido in CATEGORIAS_F11:
+            if "\n" in texto:
+                lineas += [f"T{n} {linea}" for linea in texto.split("\n")]
+            else:
+                lineas.append(f"T{n}: {texto}")
+        else:
+            lineas.append(f"T{n} ({TIPO_TAREA_F7[n]}): {texto}")
+        video = videos.get(n)
+        if video:
+            lineas.append(f"Video: {video}")
+        else:
+            videos_faltantes.append(f"T{n}")
 
-    lineas.append(_cierre(dia))
+    lineas += ["", _cierre(dia)]
 
     cuerpo = "\n".join(lineas).strip()
     contenido_faltante = not any(_es_real(buscar(t)) for t in ("T1", "T2", "T3"))
@@ -401,7 +451,7 @@ def armar_cuerpo_solo_videos(categoria, cm, ciclo, semana, dia, nombres=None, cr
     videos = buscar_videos_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path)
     if not videos:
         return None, None
-    asunto = f"{categoria} - Videos de Ciclo {ciclo}, Semana {semana}, Día {dia}"
+    asunto = f"{categoria} — Videos de Ciclo {ciclo}, Semana {semana}, Día {dia}"
     lineas = [_saludo(nombres or []), "", "Les paso los videos de esta semana que habían quedado pendientes:"]
     for tarea_num in ("1", "2", "3"):
         if tarea_num in videos:
