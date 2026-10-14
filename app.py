@@ -245,7 +245,7 @@ with tab_correos:
                 ya_enviadas = em.categorias_ya_enviadas(em.leer_historial(), clave_dia)
             except Exception:
                 ya_enviadas = {}
-            destinatarios_todos = em.get_destinatarios()
+            destinatarios_todos = em.get_destinatarios(dia=dia_correo)
             planificacion_toda = em.get_planificacion_completa()
             previews = []
             for i, categoria in enumerate(categorias):

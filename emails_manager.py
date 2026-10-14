@@ -85,19 +85,29 @@ def _categoria_base(categoria_raw):
     return re.sub(r"\s+\d.*$", "", categoria_raw).strip()
 
 
-def get_destinatarios(credentials_path="credenciales.json"):
+def get_destinatarios(credentials_path="credenciales.json", dia=None):
     """Devuelve {categoria_base: [(nombre, email), ...]}, consolidando
     subgrupos (Benjamin 9a/9b/10a/10b -> Benjamin) y sin emails duplicados
-    dentro de una misma categoria base."""
+    dentro de una misma categoria base. La columna E del Sheet ('Solo dias',
+    ej. '1,2' o '3') limita una fila a esos dias; vacia = todos. Con 'dia'
+    se descartan las filas que no corresponden a ese dia; sin 'dia' no se
+    filtra (sirve para listar categorias)."""
     client = _get_client(credentials_path)
     rows = client.open_by_key(DESTINATARIOS_FILE_ID).sheet1.get_all_values()
     grupos = {}
-    for row in rows[1:]:
+    for n_fila, row in enumerate(rows[1:], start=2):
         if len(row) < 3 or not row[0].strip():
             continue
         categoria_raw, nombre, email = row[0].strip(), row[1].strip(), row[2].strip()
         if not email:
             continue
+        solo_dias = row[4].strip() if len(row) > 4 else ""
+        if dia is not None and solo_dias:
+            dias_fila = {int(d) for d in re.findall(r"[123]", solo_dias)}
+            if not dias_fila:
+                raise ValueError(f"Columna 'Solo días' inválida en la fila {n_fila} del Sheet de entrenadores: '{solo_dias}'")
+            if dia not in dias_fila:
+                continue
         base = _categoria_base(categoria_raw)
         entrenadores = grupos.setdefault(base, [])
         if email.lower() not in {e.lower() for _, e in entrenadores}:
@@ -418,7 +428,7 @@ def categorias_del_dia(dia, credentials_path="credenciales.json"):
     """Categorias que corresponden enviar segun el dia (1 y 2: todas las que
     tengan destinatarios cargados; 3: solo las de CATEGORIAS_DIA3, que son
     las que tienen 3er entrenamiento semanal)."""
-    todas = sorted(get_destinatarios(credentials_path).keys())
+    todas = sorted(get_destinatarios(credentials_path, dia=dia).keys())
     if dia == 3:
         return [c for c in todas if c in CATEGORIAS_DIA3]
     return todas
@@ -430,7 +440,7 @@ def generar_preview(categoria, cm, ciclo, semana, dia, credentials_path="credenc
     leidos para no volver a bajar los Sheets completos por cada categoria.
     'nota' (opcional) va como primer parrafo, despues del saludo."""
     if destinatarios is None:
-        destinatarios = get_destinatarios(credentials_path)
+        destinatarios = get_destinatarios(credentials_path, dia=dia)
     entrenadores = destinatarios.get(categoria, [])
     emails = [email for _, email in entrenadores]
     nombres = [nombre for nombre, _ in entrenadores]
@@ -464,7 +474,7 @@ def armar_cuerpo_solo_videos(categoria, cm, ciclo, semana, dia, nombres=None, cr
 def generar_preview_videos(categoria, cm, ciclo, semana, dia, credentials_path="credenciales.json"):
     """(emails, asunto, cuerpo) para el correo de 'solo videos'. cuerpo es
     None si no se encontro ningun video para esta combinacion."""
-    destinatarios = get_destinatarios(credentials_path)
+    destinatarios = get_destinatarios(credentials_path, dia=dia)
     entrenadores = destinatarios.get(categoria, [])
     emails = [email for _, email in entrenadores]
     nombres = [nombre for nombre, _ in entrenadores]
