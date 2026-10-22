@@ -3,6 +3,7 @@ entrenadores por SMTP, sin intervencion de un LLM."""
 
 import re
 import smtplib
+import time
 from concurrent.futures import ThreadPoolExecutor
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -248,21 +249,36 @@ def _permisos_existentes(file_id, creds):
         return file_id, set()
 
 
-def _otorgar_permiso(file_id, email, creds):
-    """None si se otorgo; (file_id, email, motivo) si fallo."""
-    try:
-        drive = _get_drive_service(creds=creds)
-        drive.permissions().create(
-            fileId=file_id,
-            body={"type": "user", "role": "reader", "emailAddress": email},
-            fields="id",
-            sendNotificationEmail=False,
-        ).execute()
-        return None
-    except HttpError as e:
-        return (file_id, email, f"{e.resp.status} {getattr(e, 'reason', e)}")
-    except Exception as e:
-        return (file_id, email, str(e)[:120])
+ERRORES_DRIVE_REINTENTABLES = {429, 500, 502, 503, 504}
+
+
+def _otorgar_permiso(file_id, email, creds, drive=None):
+    """None si se otorgo; (file_id, email, motivo) si fallo. Reintenta con
+    espera creciente los errores transitorios de Drive (5xx / 429)."""
+    drive = drive or _get_drive_service(creds=creds)
+    for intento in range(4):
+        try:
+            drive.permissions().create(
+                fileId=file_id,
+                body={"type": "user", "role": "reader", "emailAddress": email},
+                fields="id",
+                sendNotificationEmail=False,
+            ).execute()
+            return None
+        except HttpError as e:
+            if e.resp.status in ERRORES_DRIVE_REINTENTABLES and intento < 3:
+                time.sleep(2 ** intento)
+                continue
+            return (file_id, email, f"{e.resp.status} {getattr(e, 'reason', e)}")
+        except Exception as e:
+            return (file_id, email, str(e)[:120])
+
+
+def _otorgar_permisos_archivo(file_id, emails, creds):
+    """Otorga los permisos de un archivo de a uno: Drive responde 500 cuando
+    se modifican los permisos de un mismo archivo en simultaneo."""
+    drive = _get_drive_service(creds=creds)
+    return [r for r in (_otorgar_permiso(file_id, email, creds, drive) for email in sorted(emails)) if r]
 
 
 _RE_VIDEO_ID = re.compile(r"drive\.google\.com/file/d/([A-Za-z0-9_-]+)/view")
@@ -288,13 +304,15 @@ def compartir_videos_con_destinatarios(cuerpo, emails, credentials_path="credenc
 
     with ThreadPoolExecutor(max_workers=10) as pool:
         existentes_por_archivo = dict(pool.map(lambda fid: _permisos_existentes(fid, creds), archivos))
-        pendientes = [
-            (file_id, email)
+        pendientes = {
+            file_id: emails_lower - existentes_por_archivo.get(file_id, set())
             for file_id in archivos
-            for email in (emails_lower - existentes_por_archivo.get(file_id, set()))
-        ]
-        resultados = pool.map(lambda par: _otorgar_permiso(par[0], par[1], creds), pendientes)
-        return [r for r in resultados if r]
+        }
+        resultados = pool.map(
+            lambda par: _otorgar_permisos_archivo(par[0], par[1], creds),
+            [(file_id, faltan) for file_id, faltan in pendientes.items() if faltan],
+        )
+        return [falla for fallas in resultados for falla in fallas]
 
 
 def get_planificacion_completa(credentials_path="credenciales.json"):
