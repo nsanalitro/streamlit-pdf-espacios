@@ -1,11 +1,14 @@
-"""Interfaz Streamlit: Mapas de Espacios + Envío de Correos a entrenadores."""
+"""Interfaz Streamlit: Mapas de Espacios + Envío de Correos a entrenadores + Planilla del Día."""
 
+import io
 import os
+from datetime import date, timedelta
 
 import streamlit as st
 
 import emails_manager as em
 import pdf_generator as pg
+import planilla_generator as pl
 import sheets_manager as sm
 
 st.set_page_config(page_title="AFA Internacional", page_icon="🗺️", layout="centered")
@@ -75,7 +78,7 @@ st.markdown(
 
 st.title("AFA Internacional · UCF Santa Perpètua")
 
-tab_espacios, tab_correos = st.tabs(["Mapas de Espacios", "Envío de Correos"])
+tab_espacios, tab_correos, tab_planilla = st.tabs(["Mapas de Espacios", "Envío de Correos", "Planilla del Día"])
 
 
 with tab_espacios:
@@ -452,3 +455,99 @@ with tab_correos:
                         st.session_state.preview_video = None
                     except Exception as e:
                         st.error(f"No se pudo enviar: {e}")
+
+
+with tab_planilla:
+    st.header("Planilla de entrenamiento del día")
+    st.caption(
+        "PDF para imprimir: el esqueleto y la imagen inicial del diagrama de cada ejercicio de las "
+        "categorías que entrenan ese día (2 categorías por hoja)."
+    )
+
+    @st.cache_data(ttl=300)
+    def _filas_equipos():
+        return pl.leer_filas_equipos()
+
+    @st.cache_data(ttl=60)
+    def _historial_planilla():
+        return em.leer_historial()
+
+    hoy = date.today()
+    proxima = hoy if hoy.weekday() < 5 else hoy + timedelta(days=7 - hoy.weekday())
+    fecha = st.date_input("Fecha de la sesión", value=proxima, format="DD/MM/YYYY", key="planilla_fecha")
+    dia_semana = fecha.weekday()
+
+    paginas, filas_equipos = [], None
+    if dia_semana > 4:
+        st.warning("Los sábados y domingos no hay entrenamientos cargados. Elegí un día de lunes a viernes.")
+    else:
+        try:
+            filas_equipos = _filas_equipos()
+            paginas = pl.paginas_del_dia_semana(dia_semana, filas_equipos)
+        except Exception as e:
+            st.error(f"No se pudo leer la hoja de entrenadores: {e}")
+        if filas_equipos is not None and not paginas:
+            st.warning("Ese día no entrena ninguna categoría.")
+
+    if paginas:
+        dia_plan = paginas[0]["dia"]
+        try:
+            sugerido_p = pl.semana_sugerida(_historial_planilla(), dia_plan)
+        except Exception:
+            sugerido_p = (1, 1, 1)
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            cm_p = st.selectbox("Ciclo Matriz", [1, 2, 3], index=sugerido_p[0] - 1, key=f"planilla_cm_{dia_plan}_{sugerido_p}")
+        with p2:
+            ciclo_p = st.selectbox("Ciclo", [1, 2, 3, 4], index=sugerido_p[1] - 1, key=f"planilla_ciclo_{dia_plan}_{sugerido_p}")
+        with p3:
+            semana_p = st.selectbox("Semana", [1, 2, 3], index=sugerido_p[2] - 1, key=f"planilla_semana_{dia_plan}_{sugerido_p}")
+        st.caption(
+            f"{pl.DIAS_NOMBRE[dia_semana].capitalize()}: corresponde el **Día {dia_plan}** del plan. "
+            "La semana viene preseleccionada con lo último que enviaste para ese día."
+        )
+
+        st.markdown("**Se imprimen:**")
+        for pag in paginas:
+            equipos = f" ({' · '.join(pag['equipos'])})" if pag["equipos"] else ""
+            st.markdown(f"- {' + '.join(pag['cats'])}{equipos}")
+        st.caption(f"{len(paginas)} categorías → {-(-len(paginas) // 2)} hojas A4.")
+
+        st.divider()
+        _, col_boton_p, _ = st.columns([1, 2, 1])
+        with col_boton_p:
+            generar_p = st.button("Generar planilla en PDF", type="primary", use_container_width=True, key="btn_planilla")
+
+        clave_p = (fecha, cm_p, ciclo_p, semana_p)
+        if generar_p:
+            progress_p = st.progress(0, text="Preparando...")
+            try:
+                buffer_p = io.BytesIO()
+                info_p = pl.generar_planilla_pdf(
+                    dia_semana, cm_p, ciclo_p, semana_p, buffer_p, fecha=fecha, filas=filas_equipos,
+                    progreso=lambda frac, texto: progress_p.progress(int(frac * 100), text=texto),
+                )
+                st.session_state.planilla = {
+                    "clave": clave_p,
+                    "bytes": buffer_p.getvalue(),
+                    "nombre": f"Planilla {pl.DIAS_NOMBRE[dia_semana].capitalize()} {fecha.strftime('%d-%m-%Y')}.pdf",
+                    "info": info_p,
+                }
+            except Exception as e:
+                st.session_state.planilla = None
+                st.error(f"No se pudo generar la planilla: {e}")
+            finally:
+                progress_p.empty()
+
+        resultado_p = st.session_state.get("planilla")
+        if resultado_p and resultado_p["clave"] == clave_p:
+            st.success(f"Planilla generada: {resultado_p['info']['hojas']} hojas.")
+            for titulo_f, faltas in resultado_p["info"]["faltantes"]:
+                st.warning(f"Falta en **{titulo_f}**: {', '.join(faltas)}. Esa parte sale con un recuadro vacío.")
+            st.download_button(
+                "Descargar PDF",
+                data=resultado_p["bytes"],
+                file_name=resultado_p["nombre"],
+                mime="application/pdf",
+                use_container_width=True,
+            )
