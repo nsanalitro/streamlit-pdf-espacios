@@ -4,6 +4,7 @@ entrenadores por SMTP, sin intervencion de un LLM."""
 import re
 import smtplib
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -356,6 +357,14 @@ def _es_real(texto):
     return bool(texto) and PLACEHOLDER_TEXTO not in texto
 
 
+def no_se_realiza(texto):
+    """True si la tarea figura como no realizada ese dia: su texto empieza con 'No se realiza'
+    (ej. 'No se realiza: se diluye en el propio partido...'). Sale en el correo tal cual, sin
+    video, y no bloquea el envio por falta de video."""
+    normal = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().lower().strip()
+    return normal.startswith("no se realiza")
+
+
 # Formato del cuerpo tal cual los correos reales enviados con la skill
 # (orden: saludo, intro, FOCO, ESQUELETO, TAREA 0, T1/T2/T3 con su video).
 # El Foco solo sale en las categorias cuyo Word lo trae, con su etiqueta.
@@ -429,6 +438,8 @@ def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, no
                 lineas.append(f"T{n}: {texto}")
         else:
             lineas.append(f"T{n} ({TIPO_TAREA_F7[n]}): {texto}")
+        if no_se_realiza(texto):
+            continue  # tarea que ese dia no se hace: sin video
         video = videos.get(n)
         if video:
             lineas.append(f"Video: {video}")
