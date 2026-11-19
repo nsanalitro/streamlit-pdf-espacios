@@ -1,5 +1,5 @@
-"""Planilla de impresion del dia: hojas A4 verticales con 2 categorias por hoja, cada una con
-el esqueleto horario y la imagen inicial (primer cuadro del video) de sus ejercicios.
+"""Planilla de impresion del dia: una hoja A4 vertical por categoria, con el esqueleto horario y la
+imagen inicial (primer cuadro del video) de sus ejercicios.
 Todo determinista: textos del Sheet de planificacion, esqueletos de emails_manager e
 imagenes de los videos de Drive; sin LLM."""
 
@@ -55,6 +55,8 @@ DIAS_ENTRENAMIENTO = {
     "Cadete Femenino": [0, 2, 4],
     "Juvenil Femenino": [0, 2, 4],
 }
+TAM_TITULO = 10  # tamano base del titulo de cada ejercicio
+TAM_TEXTO = 9.5  # tamano base de la descripcion
 ABREVIATURAS = {"Tarea 0 (motricidad)": "T0", "Transición": "Trans.", "Explicación": "Explic."}
 TIPO_TAREA = {"1": "ANALÍTICA", "2": "FACILITADORA", "3": "GLOBAL"}
 
@@ -208,15 +210,22 @@ def _repite_titulo(titulo, texto):
     return bool(t) and len(d) <= len(t) + 12 and SequenceMatcher(None, t, d[: len(t) + 5]).ratio() >= 0.9
 
 
+def _hacer_parrafo(texto, size, bold=False, color=colors.black):
+    estilo = ParagraphStyle(
+        "p", fontName="Helvetica-Bold" if bold else "Helvetica", fontSize=size, leading=size * 1.2, textColor=color
+    )
+    return Paragraph(escape(_pdf_text(texto)).replace("\n", "<br/>"), estilo)
+
+
+def _alto_parrafo(texto, w, size, bold=False):
+    return _hacer_parrafo(texto, size, bold).wrap(w, 10000)[1]
+
+
 def _parrafo(c, texto, x, y_top, w, h_max, size_max=9, size_min=6.5, bold=False, color=colors.black):
     """Dibuja texto ajustando el tamano para que entre en h_max; devuelve el alto usado."""
-    texto = escape(_pdf_text(texto)).replace("\n", "<br/>")
     size = size_max
     while True:
-        estilo = ParagraphStyle(
-            "p", fontName="Helvetica-Bold" if bold else "Helvetica", fontSize=size, leading=size * 1.2, textColor=color
-        )
-        p = Paragraph(texto, estilo)
+        p = _hacer_parrafo(texto, size, bold, color)
         _, h = p.wrap(w, 10000)
         if h <= h_max or size <= size_min:
             if h > h_max:
@@ -315,7 +324,7 @@ def _dibujar_bloque(c, x, y_top, w, h, pagina, clave_esq, t0, ejercicios):
     dif_h = 0
     if notas:
         dif_txt = "<br/>".join(f"<b>T{n}</b> · {escape(_pdf_text(nota))}" for n, nota in notas)
-        size_dif = 7
+        size_dif = 8
         while True:
             estilo = ParagraphStyle("dif", fontName="Helvetica", fontSize=size_dif, leading=size_dif * 1.2, textColor=colors.HexColor("#333333"))
             p_dif = Paragraph(dif_txt, estilo)
@@ -339,8 +348,19 @@ def _dibujar_bloque(c, x, y_top, w, h, pagina, clave_esq, t0, ejercicios):
     col_w = (w - 2 * gap) / 3
     segs = {n: m for n, m, _ in _segmentos(clave_esq)}
     resto = y - (y_pie + dif_h + (2 * mm if notas else 0))  # alto disponible para las 3 columnas
-    texto_h = 30 * mm
-    img_h = max(28 * mm, resto - 6.5 * mm - 2.5 * mm - texto_h)
+
+    def alto_texto(n):
+        d = ejercicios.get(n, {})
+        total = 0
+        if d.get("titulo"):
+            total += _alto_parrafo(d["titulo"], col_w, TAM_TITULO, bold=True) + 1.5 * mm
+        if d.get("texto") and not _repite_titulo(d.get("titulo"), d["texto"]):
+            total += _alto_parrafo(d["texto"], col_w, TAM_TEXTO)
+        return total
+
+    # el texto de cada columna se dibuja completo al tamano base; las imagenes se quedan con el resto de la hoja
+    texto_h = max(alto_texto(n) for n in ("1", "2", "3")) + 3 * mm
+    img_h = max(30 * mm, min(95 * mm, resto - 6.5 * mm - 2.5 * mm - texto_h))
     for i, n in enumerate(("1", "2", "3")):
         cx = x + i * (col_w + gap)
         datos = ejercicios.get(n, {})
@@ -354,6 +374,17 @@ def _dibujar_bloque(c, x, y_top, w, h, pagina, clave_esq, t0, ejercicios):
         top_img = y - 5 * mm - 1.5 * mm
         c.setStrokeColor(BORDE)
         c.setLineWidth(0.6)
+        if datos.get("no_realiza"):
+            # tarea que ese dia no se hace: sin diagrama, solo el aviso y su texto
+            caja = min(img_h, 28 * mm)
+            c.setFillColor(colors.HexColor("#F2F2F2"))
+            c.rect(cx, top_img - caja, col_w, caja, fill=1, stroke=1)
+            c.setFillColor(GRIS_TEXTO)
+            c.setFont("Helvetica-Bold", 10)
+            c.drawCentredString(cx + col_w / 2, top_img - caja / 2 - 1.5 * mm, "NO SE REALIZA")
+            if datos.get("texto"):
+                _parrafo(c, datos["texto"], cx, top_img - caja - 2 * mm, col_w, 40 * mm, size_max=TAM_TEXTO, size_min=7, color=colors.HexColor("#222222"))
+            continue
         if datos.get("img"):
             lector = ImageReader(io.BytesIO(datos["img"]))
             iw, ih = lector.getSize()
@@ -373,10 +404,10 @@ def _dibujar_bloque(c, x, y_top, w, h, pagina, clave_esq, t0, ejercicios):
         yy = top_img - usado - 2 * mm
         limite = y_pie + dif_h + (2 * mm if notas else 0)  # el texto no pisa las notas Dif
         if datos.get("titulo"):
-            yy -= _parrafo(c, datos["titulo"], cx, yy, col_w, 12 * mm, size_max=9.5, size_min=7.5, bold=True) + 1.5 * mm
+            yy -= _parrafo(c, datos["titulo"], cx, yy, col_w, 16 * mm, size_max=TAM_TITULO, size_min=7.5, bold=True) + 1.5 * mm
         texto = datos.get("texto") or ""
         if texto and not _repite_titulo(datos.get("titulo"), texto):
-            _parrafo(c, texto, cx, yy, col_w, max(8 * mm, yy - limite), size_max=9, size_min=6, color=colors.HexColor("#222222"))
+            _parrafo(c, texto, cx, yy, col_w, max(8 * mm, yy - limite), size_max=TAM_TEXTO, size_min=6, color=colors.HexColor("#222222"))
 
 
 def semana_sugerida(historial, dia):
@@ -394,7 +425,7 @@ def generar_planilla_pdf(
     dia_semana, cm, ciclo, semana, salida, fecha=None, filas=None, plan=None,
     credentials_path="credenciales.json", progreso=None,
 ):
-    """Genera el PDF de impresion del dia (dia_semana: 0=lunes ... 4=viernes), con 2 categorias por hoja.
+    """Genera el PDF de impresion del dia (dia_semana: 0=lunes ... 4=viernes), una categoria por hoja.
     'salida' puede ser una ruta o un archivo en memoria (io.BytesIO). 'progreso(fraccion, texto)' se llama
     a medida que avanza. Devuelve {"hojas": n, "faltantes": [(titulo, [detalle, ...])]} con los videos o
     textos que no se encontraron (la hoja sale igual, con un recuadro en ese hueco)."""
@@ -428,9 +459,10 @@ def generar_planilla_pdf(
     for i, p in enumerate(paginas):
         falta = []
         for n in ("1", "2", "3"):
-            if not video.get((i, n), (None, None))[1]:
+            crudo = plan.get((p["base"], str(cm), str(ciclo), str(semana), str(p["dia"]), f"T{n}")) or ""
+            if not video.get((i, n), (None, None))[1] and not em.no_se_realiza(crudo):
                 falta.append(f"T{n}: video")
-            if not em._es_real(plan.get((p["base"], str(cm), str(ciclo), str(semana), str(p["dia"]), f"T{n}")) or ""):
+            if not em._es_real(crudo):
                 falta.append(f"T{n}: ejercicio")
         if falta:
             faltantes.append((" + ".join(p["cats"]) + f" (Día {p['dia']})", falta))
@@ -442,9 +474,8 @@ def generar_planilla_pdf(
     nombre_dia = DIAS_NOMBRE[dia_semana]
     texto_dia = f"{nombre_dia} {fecha.strftime('%d/%m/%Y')}" if fecha else nombre_dia
     cabecera, pie = 10 * mm, 8 * mm
-    util = page_h - cabecera - pie - 2 * margen / 2
-    alto_bloque = (util - 5 * mm) / 2
-    for inicio in range(0, len(paginas), 2):
+    alto_bloque = page_h - cabecera - pie - 10 * mm
+    for i, p in enumerate(paginas):
         c.setFillColor(AZUL_HEADER)
         c.rect(0, page_h - cabecera, page_w, cabecera, fill=1, stroke=0)
         c.setFillColor(colors.white)
@@ -452,26 +483,23 @@ def generar_planilla_pdf(
         c.drawString(margen, page_h - 6.8 * mm, _pdf_text(texto_dia))
         c.setFont("Helvetica", 9)
         c.drawRightString(page_w - margen, page_h - 6.6 * mm, f"Ciclo Matriz {cm} · Ciclo {ciclo} · Semana {semana}")
-        for k, i in enumerate(range(inicio, min(inicio + 2, len(paginas)))):
-            p = paginas[i]
-            ejercicios = {}
-            for n in ("1", "2", "3"):
-                titulo, img = video.get((i, n), (None, None))
-                crudo = plan.get((p["base"], str(cm), str(ciclo), str(semana), str(p["dia"]), f"T{n}")) or ""
-                texto, dif = _separar_dif(crudo if em._es_real(crudo) else "")
-                ejercicios[n] = {"titulo": titulo, "img": img, "texto": texto or None, "dif": dif}
-            t0 = plan.get((p["base"], str(cm), str(ciclo), str(semana), str(p["dia"]), "T0"))
-            y_top = page_h - cabecera - margen / 2 - k * (alto_bloque + 5 * mm)
-            _dibujar_bloque(
-                c, margen, y_top, ancho, alto_bloque, p, em.CATEGORIA_ESQUELETO[p["cats"][0]],
-                t0 if em._es_real(t0 or "") else None, ejercicios,
-            )
+        ejercicios = {}
+        for n in ("1", "2", "3"):
+            titulo, img = video.get((i, n), (None, None))
+            crudo = plan.get((p["base"], str(cm), str(ciclo), str(semana), str(p["dia"]), f"T{n}")) or ""
+            texto, dif = _separar_dif(crudo if em._es_real(crudo) else "")
+            ejercicios[n] = {"titulo": titulo, "img": img, "texto": texto or None, "dif": dif, "no_realiza": em.no_se_realiza(texto)}
+        t0 = plan.get((p["base"], str(cm), str(ciclo), str(semana), str(p["dia"]), "T0"))
+        _dibujar_bloque(
+            c, margen, page_h - cabecera - 5 * mm, ancho, alto_bloque, p, em.CATEGORIA_ESQUELETO[p["cats"][0]],
+            t0 if em._es_real(t0 or "") else None, ejercicios,
+        )
         c.setFillColor(GRIS_TEXTO)
         c.setFont("Helvetica", 6.5)
         c.drawString(margen, 5 * mm, "AFA INTERNACIONAL - UCF SANTA PERPETUA")
         c.drawRightString(page_w - margen, 5 * mm, f"Generado el {date.today().strftime('%d/%m/%Y')}")
         c.showPage()
-        avisar(0.90 + 0.09 * min(inicio + 2, len(paginas)) / len(paginas), "Armando el PDF...")
+        avisar(0.90 + 0.09 * (i + 1) / len(paginas), "Armando el PDF...")
     c.save()
     avisar(1.0, "Listo")
-    return {"hojas": -(-len(paginas) // 2), "faltantes": faltantes}
+    return {"hojas": len(paginas), "faltantes": faltantes}

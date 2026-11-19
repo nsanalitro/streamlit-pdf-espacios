@@ -461,7 +461,7 @@ with tab_planilla:
     st.header("Planilla de entrenamiento del día")
     st.caption(
         "PDF para imprimir: el esqueleto y la imagen inicial del diagrama de cada ejercicio de las "
-        "categorías que entrenan ese día (2 categorías por hoja)."
+        "categorías que entrenan ese día (una categoría por hoja)."
     )
 
     @st.cache_data(ttl=300)
@@ -511,7 +511,7 @@ with tab_planilla:
         for pag in paginas:
             equipos = f" ({' · '.join(pag['equipos'])})" if pag["equipos"] else ""
             st.markdown(f"- {' + '.join(pag['cats'])}{equipos}")
-        st.caption(f"{len(paginas)} categorías → {-(-len(paginas) // 2)} hojas A4.")
+        st.caption(f"{len(paginas)} hojas A4, una por categoría.")
 
         st.divider()
         _, col_boton_p, _ = st.columns([1, 2, 1])
