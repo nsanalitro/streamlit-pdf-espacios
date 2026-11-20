@@ -458,8 +458,9 @@ def generar_planilla_pdf(
     faltantes = []
     for i, p in enumerate(paginas):
         falta = []
+        cm_c = str(em.cm_de_contenido(p["base"], cm))  # Escoleta/Prebenjamin: ciclo matriz unico
         for n in ("1", "2", "3"):
-            crudo = plan.get((p["base"], str(cm), str(ciclo), str(semana), str(p["dia"]), f"T{n}")) or ""
+            crudo = plan.get((p["base"], cm_c, str(ciclo), str(semana), str(p["dia"]), f"T{n}")) or ""
             if not video.get((i, n), (None, None))[1] and not em.no_se_realiza(crudo):
                 falta.append(f"T{n}: video")
             if not em._es_real(crudo):
@@ -484,12 +485,13 @@ def generar_planilla_pdf(
         c.setFont("Helvetica", 9)
         c.drawRightString(page_w - margen, page_h - 6.6 * mm, f"Ciclo Matriz {cm} · Ciclo {ciclo} · Semana {semana}")
         ejercicios = {}
+        cm_c = str(em.cm_de_contenido(p["base"], cm))
         for n in ("1", "2", "3"):
             titulo, img = video.get((i, n), (None, None))
-            crudo = plan.get((p["base"], str(cm), str(ciclo), str(semana), str(p["dia"]), f"T{n}")) or ""
+            crudo = plan.get((p["base"], cm_c, str(ciclo), str(semana), str(p["dia"]), f"T{n}")) or ""
             texto, dif = _separar_dif(crudo if em._es_real(crudo) else "")
             ejercicios[n] = {"titulo": titulo, "img": img, "texto": texto or None, "dif": dif, "no_realiza": em.no_se_realiza(texto)}
-        t0 = plan.get((p["base"], str(cm), str(ciclo), str(semana), str(p["dia"]), "T0"))
+        t0 = plan.get((p["base"], cm_c, str(ciclo), str(semana), str(p["dia"]), "T0"))
         _dibujar_bloque(
             c, margen, page_h - cabecera - 5 * mm, ancho, alto_bloque, p, em.CATEGORIA_ESQUELETO[p["cats"][0]],
             t0 if em._es_real(t0 or "") else None, ejercicios,

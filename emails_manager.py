@@ -193,6 +193,16 @@ CATEGORIA_PREFIJO_VIDEO = {
 }
 
 
+# Escoleta y Prebenjamin tienen un unico Ciclo Matriz que se repite: en CM2 y CM3 usan el texto
+# y los videos de CM1 (no hay videos propios de CM2/CM3 para ellas).
+CATEGORIAS_CM_UNICO = {"Escoleta", "Prebenjamín"}
+
+
+def cm_de_contenido(categoria_contenido, cm):
+    """CM del que salen el texto y los videos de esa categoria."""
+    return 1 if categoria_contenido in CATEGORIAS_CM_UNICO else cm
+
+
 def _buscar_archivos_video_dia(categoria_contenido, cm, ciclo, semana, dia, credentials_path="credenciales.json"):
     """Busca en Drive los videos de T1/T2/T3 de una categoria/semana/dia.
     Devuelve {"1": file_id, "2": file_id, "3": file_id} (solo las tareas con
@@ -206,6 +216,7 @@ def _buscar_archivos_video_dia(categoria_contenido, cm, ciclo, semana, dia, cred
     prefijo = CATEGORIA_PREFIJO_VIDEO.get(categoria_contenido)
     if not prefijo:
         return {}
+    cm = cm_de_contenido(categoria_contenido, cm)
     separador = "-" if len(prefijo) > 1 else ""
     clave_dia = f"{prefijo}{separador}CM{cm}-C{ciclo}-S{semana}-D{dia}"
     drive = _get_drive_service(credentials_path)
@@ -401,7 +412,7 @@ def armar_cuerpo_email(categoria, cm, ciclo, semana, dia, planificacion=None, no
     esqueleto = ESQUELETOS[clave_esqueleto]
 
     def buscar(tarea):
-        return planificacion.get((categoria_contenido, str(cm), str(ciclo), str(semana), str(dia), tarea))
+        return planificacion.get((categoria_contenido, str(cm_de_contenido(categoria_contenido, cm)), str(ciclo), str(semana), str(dia), tarea))
 
     asunto = f"{categoria} — Ciclo {ciclo}, Semana {semana}, Día {dia}"
 
